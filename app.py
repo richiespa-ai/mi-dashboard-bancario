@@ -2,11 +2,45 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import json
+import os
 from datetime import datetime
 
 st.set_page_config(page_title="Dashboard de Gestión Bancaria", layout="wide", initial_sidebar_state="expanded")
 
 st.title("💳 Dashboard de Gestión Bancaria y Recibos Futuros")
+
+# --- MEMORIA DE CATEGORÍAS (SISTEMA DE PERSISTENCIA) ---
+MAPPING_FILE = "categorias_custom.json"
+
+def cargar_mapeo_categorias():
+    if os.path.exists(MAPPING_FILE):
+        try:
+            with open(MAPPING_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def guardar_mapeo_categorias(mapeo):
+    try:
+        with open(MAPPING_FILE, "w", encoding="utf-8") as f:
+            json.dump(mapeo, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.sidebar.error(f"Error al guardar categorías: {e}")
+
+if "custom_categories" not in st.session_state:
+    st.session_state["custom_categories"] = cargar_mapeo_categorias()
+
+# LISTA OFICIAL DE CATEGORÍAS
+CATEGORIAS_DISPONIBLES = [
+    'Supermercados y Compras',
+    'Suministros y Hogar',
+    'Ocio y Tiendas',
+    'Impuestos y Recibos',
+    'Transferencias / Bizum',
+    'Otros Movimientos'
+]
 
 # --- DETECCIÓN AUTOMÁTICA Y CARGA DE ARCHIVOS ---
 def cargar_archivo(uploaded_file):
@@ -119,9 +153,16 @@ if uploaded_file is not None:
         df['Importe_Clean'] = df[col_importe].apply(limpiar_importe)
         df['Concepto_Clean'] = df[col_concepto].astype(str).str.strip()
         
-        # Categorización automática
+        # Categorización inteligente (Reglas por defecto + Memoria personalizada)
         def categorizar(concepto):
             c_text = concepto.lower()
+            
+            # 1. Verificar si hay un mapeo personalizado guardado previamente
+            for key_concepto, cat_custom in st.session_state["custom_categories"].items():
+                if key_concepto.lower() in c_text:
+                    return cat_custom
+
+            # 2. Mapeo automático de fallback
             if any(k in c_text for k in ['carref', 'alimen', 'farma', 'super', 'mercadona', 'lidl', 'dia', 'eroski', 'bazar']):
                 return 'Supermercados y Compras'
             elif any(k in c_text for k in ['iberdrola', 'endesa', 'naturgy', 'agua', 'agbar', 'gas', 'luz', 'vodafone', 'orange', 'movistar']):
@@ -268,8 +309,9 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # --- TABLA INTERACTIVA DE MOVIMIENTOS ---
-        st.subheader("📋 Movimientos Procesados")
+        # --- TABLA INTERACTIVA Y EDITABLE DE MOVIMIENTOS ---
+        st.subheader("📋 Movimientos Procesados (Categorización Editable)")
+        st.caption("✏️ Puedes modificar la categoría de cualquier movimiento directamente en la tabla. Las preferencias se guardarán para las próximas cargas.")
         
         # Aplicar filtro por palabra clave
         df_filtered = df.copy()
@@ -279,26 +321,47 @@ if uploaded_file is not None:
         df_display = df_filtered.sort_values('Fecha_Clean', ascending=False)[['Fecha_Clean', 'Concepto_Clean', 'Categoria', 'Importe_Clean']].copy()
         df_display['Fecha_Clean'] = df_display['Fecha_Clean'].dt.strftime('%Y-%m-%d')
         df_display.columns = ['Fecha', 'Concepto', 'Categoría', 'Importe (€)']
-        
-        # Formato de color (Soporta compatibilidad con map / applymap)
-        def color_importe(val):
-            if val < 0:
-                return 'background-color: #ffcdd2; color: #b71c1c; font-weight: bold;'
-            elif val > 0:
-                return 'background-color: #c8e6c9; color: #1b5e20; font-weight: bold;'
-            return ''
 
-        styler = df_display.style
-        if hasattr(styler, 'map'):
-            styler = styler.map(color_importe, subset=['Importe (€)'])
-        else:
-            styler = styler.applymap(color_importe, subset=['Importe (€)'])
-
-        st.dataframe(
-            styler.format({'Importe (€)': '{:,.2f} €'}),
+        # Editor interactivo de datos
+        edited_df = st.data_editor(
+            df_display,
+            column_config={
+                "Categoría": st.column_config.SelectboxColumn(
+                    "Categoría",
+                    help="Selecciona o cambia la categoría de este movimiento",
+                    options=CATEGORIAS_DISPONIBLES,
+                    required=True
+                ),
+                "Importe (€)": st.column_config.NumberColumn(
+                    "Importe (€)",
+                    format="%.2f €"
+                ),
+                "Fecha": st.column_config.TextColumn("Fecha", disabled=True),
+                "Concepto": st.column_config.TextColumn("Concepto", disabled=True)
+            },
+            disabled=["Fecha", "Concepto", "Importe (€)"],
+            hide_index=True,
             use_container_width=True,
-            height=400
+            key="table_editor"
         )
+
+        # Detectar cambios realizados por el usuario y guardarlos en memoria
+        if edited_df is not None:
+            cambios_detectados = False
+            for idx in edited_df.index:
+                concepto_val = edited_df.loc[idx, 'Concepto']
+                nueva_cat = edited_df.loc[idx, 'Categoría']
+                
+                # Si la categoría en la tabla difiere de la asignada originalmente
+                cat_original = df_display.loc[idx, 'Categoría']
+                if nueva_cat != cat_original:
+                    st.session_state["custom_categories"][concepto_val] = nueva_cat
+                    cambios_detectados = True
+
+            if cambios_detectados:
+                guardar_mapeo_categorias(st.session_state["custom_categories"])
+                st.toast("✅ Categoría guardada para futuras lecturas", icon="💾")
+                st.rerun()
 
 else:
     st.info("👋 Por favor, sube un archivo **CSV** o **Excel (.xlsx, .xls)** en el panel de la izquierda para comenzar.")
