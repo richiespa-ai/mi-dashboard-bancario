@@ -6,12 +6,11 @@ st.set_page_config(page_title="Dashboard de Gestión Bancaria", layout="wide", i
 
 st.title("💳 Dashboard de Gestión Bancaria y Recibos Futuros")
 
-# --- FUNCION DE LECTURA DE ARCHIVOS ---
+# --- FUNCIÓN DE LECTURA DE ARCHIVOS ---
 def cargar_archivo(uploaded_file, skip_rows_manual):
     file_name = uploaded_file.name.lower()
     try:
         uploaded_file.seek(0)
-        # Lectura inicial sin cabecera para inspeccionar la estructura
         if file_name.endswith('.csv'):
             try:
                 df_temp = pd.read_csv(uploaded_file, encoding='utf-8', header=None)
@@ -22,17 +21,14 @@ def cargar_archivo(uploaded_file, skip_rows_manual):
             df_temp = pd.read_excel(uploaded_file, header=None)
         else:
             st.error("Formato no soportado.")
-            return None
+            return None, 0
 
-        # Si el usuario especifica un salto manual (>0), se usa directamente
         if skip_rows_manual > 0:
             header_row = skip_rows_manual
         else:
-            # Algoritmo de detección inteligente: requiere coincidencia triple
             header_row = 0
             for idx, row in df_temp.iterrows():
                 cells = [str(val).strip().lower() for val in row if pd.notna(val)]
-                
                 has_fecha = any('fecha' in c for c in cells)
                 has_concepto = any(k in c for c in cells for k in ['concepto', 'detalle', 'descripcion', 'descripción'])
                 has_importe = any(k in c for c in cells for k in ['importe', 'monto', 'saldo', 'cantidad'])
@@ -41,7 +37,6 @@ def cargar_archivo(uploaded_file, skip_rows_manual):
                     header_row = idx
                     break
 
-        # Cargar dataframe definitivo
         uploaded_file.seek(0)
         if file_name.endswith('.csv'):
             try:
@@ -52,7 +47,6 @@ def cargar_archivo(uploaded_file, skip_rows_manual):
         else:
             df = pd.read_excel(uploaded_file, skiprows=header_row)
             
-        # Limpieza de columnas no válidas
         df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed', na=False)]
         df = df.dropna(how='all')
         
@@ -67,8 +61,7 @@ st.sidebar.header("📥 Ingesta de Datos")
 
 skip_rows_manual = st.sidebar.number_input(
     "Forzar filas a ignorar (0 = automático):", 
-    min_value=0, max_value=30, value=0, step=1,
-    help="Si el archivo tiene texto o logos arriba y falla la detección, ajusta este valor."
+    min_value=0, max_value=30, value=0, step=1
 )
 
 uploaded_file = st.sidebar.file_uploader(
@@ -80,7 +73,7 @@ if uploaded_file is not None:
     df_raw, header_row_used = cargar_archivo(uploaded_file, skip_rows_manual)
     
     if df_raw is not None and not df_raw.empty:
-        st.sidebar.success(f"Archivo cargado ({len(df_raw)} movimientos) | Cabecera en fila: {header_row_used}")
+        st.sidebar.success(f"Archivo cargado ({len(df_raw)} movimientos)")
         
         # --- MAPEO INTELIGENTE DE COLUMNAS ---
         st.sidebar.subheader("⚙️ Mapeo de Columnas")
@@ -104,7 +97,7 @@ if uploaded_file is not None:
         df = df_raw.copy()
         
         df['Fecha_Clean'] = pd.to_datetime(df[col_fecha], errors='coerce', dayfirst=True)
-        df = df.dropna(subset=['Fecha_Clean']).sort_values('Fecha_Clean', ascending=False)
+        df = df.dropna(subset=['Fecha_Clean']).sort_values('Fecha_Clean', ascending=True) # Ordenar de más antiguo a más reciente
         
         def limpiar_importe(val):
             if pd.isna(val):
@@ -127,6 +120,16 @@ if uploaded_file is not None:
         df['Importe_Clean'] = df[col_importe].apply(limpiar_importe)
         df['Concepto_Clean'] = df[col_concepto].astype(str).str.strip()
         
+        # --- CÁLCULO DE SALDOS E INICIO DE PERIODO ---
+        if col_saldo != "-- No incluir --":
+            df['Saldo_Clean'] = df[col_saldo].apply(limpiar_importe)
+            saldo_actual = df['Saldo_Clean'].iloc[-1]
+            # Saldo previo al primer movimiento del archivo
+            saldo_inicial = df['Saldo_Clean'].iloc[0] - df['Importe_Clean'].iloc[0]
+        else:
+            saldo_actual = df['Importe_Clean'].sum()
+            saldo_inicial = 0.0
+
         # --- MOTOR DE PREDICCIÓN DE RECIBOS RECURRENTES ---
         conceptos_clave = [
             'luz', 'endesa', 'iberdrola', 'naturgy', 'agbar', 'agua', 'gas',
@@ -153,49 +156,42 @@ if uploaded_file is not None:
                     })
 
         df_futuros = pd.DataFrame(gastos_futuros)
-        
-        # --- CÁLCULO DE MÉTRICAS Y SALDOS ---
-        if col_saldo != "-- No incluir --":
-            df['Saldo_Clean'] = df[col_saldo].apply(limpiar_importe)
-            saldo_actual = df['Saldo_Clean'].iloc[0]
-        else:
-            saldo_actual = df['Importe_Clean'].sum()
-            
         compromisos = df_futuros['Importe Estimado (€)'].sum() if not df_futuros.empty else 0.0
         saldo_disponible = saldo_actual - compromisos
         
         # --- DASHBOARD PRINCIPAL ---
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Saldo Real Actual", f"{saldo_actual:,.2f} €")
-        col2.metric("Recibos Pendientes Estimados", f"-{compromisos:,.2f} €")
-        col3.metric("Saldo Libre Real", f"{saldo_disponible:,.2f} €")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Saldo Inicial Periodo", f"{saldo_inicial:,.2f} €")
+        col2.metric("Saldo Actual en Cuenta", f"{saldo_actual:,.2f} €")
+        col3.metric("Recibos Pendientes Estimados", f"-{compromisos:,.2f} €")
+        col4.metric("Saldo Libre Disponible", f"{saldo_disponible:,.2f} €")
         
         st.divider()
         
         col_left, col_right = st.columns([1, 1])
         
         with col_left:
-            st.subheader("🔮 Próximos Recibos Proyectados este Mes")
+            st.subheader("🔮 Próximos Recibos Proyectados")
             if not df_futuros.empty:
                 st.dataframe(df_futuros, use_container_width=True)
             else:
                 st.info("No se han detectado patrones de recibos recurrentes pendientes.")
                 
         with col_right:
-            st.subheader("📊 Resumen del Periodo")
+            st.subheader("📊 Balance del Periodo")
             ingresos = df[df['Importe_Clean'] > 0]['Importe_Clean'].sum()
             gastos = abs(df[df['Importe_Clean'] < 0]['Importe_Clean'].sum())
             
             df_resumen = pd.DataFrame({
-                "Tipo": ["Ingresos Totales", "Gastos Totales"],
-                "Monto (€)": [ingresos, gastos]
+                "Concepto": ["Saldo Inicial", "(+) Ingresos Totales", "(-) Gastos Totales", "(=) Saldo Actual"],
+                "Monto (€)": [saldo_inicial, ingresos, gastos, saldo_actual]
             })
             st.dataframe(df_resumen, use_container_width=True)
             
         st.divider()
         st.subheader("📋 Movimientos Procesados")
         
-        df_display = df[['Fecha_Clean', 'Concepto_Clean', 'Importe_Clean']].copy()
+        df_display = df.sort_values('Fecha_Clean', ascending=False)[['Fecha_Clean', 'Concepto_Clean', 'Importe_Clean']].copy()
         df_display.columns = ['Fecha', 'Concepto', 'Importe (€)']
         st.dataframe(df_display, use_container_width=True)
 
