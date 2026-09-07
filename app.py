@@ -29,9 +29,9 @@ def cargar_archivo(uploaded_file):
         header_row = 0
         for idx, row in df_temp.iterrows():
             cells = [str(val).strip().lower() for val in row if pd.notna(val)]
-            has_fecha = any('fecha' in c for c in cells)
-            has_concepto = any(k in c for k in cells for k in ['concepto', 'detalle', 'descripcion', 'descripción'])
-            has_importe = any(k in c for c in cells for k in ['importe', 'monto', 'saldo', 'cantidad'])
+            has_fecha = any('fecha' in item for item in cells)
+            has_concepto = any(k in item for item in cells for k in ['concepto', 'detalle', 'descripcion', 'descripción'])
+            has_importe = any(k in item for item in cells for k in ['importe', 'monto', 'saldo', 'cantidad'])
             
             if has_fecha and has_concepto and has_importe:
                 header_row = idx
@@ -72,13 +72,13 @@ if uploaded_file is not None:
         
         # --- MAPEO INTELIGENTE DE COLUMNAS ---
         st.sidebar.subheader("⚙️ Mapeo de Columnas")
-        columnas = [str(c).strip() for c in df_raw.columns]
+        columnas = [str(col_item).strip() for col_item in df_raw.columns]
         df_raw.columns = columnas
         
-        col_fecha_default = next((i for i, c in enumerate(columnas) if 'fecha' in c.lower()), 0)
-        col_concepto_default = next((i for i, c in enumerate(columnas) if 'concepto' in c.lower() or 'descrip' in c.lower()), min(1, len(columnas)-1))
-        col_importe_default = next((i for i, c in enumerate(columnas) if 'importe' in c.lower() or 'monto' in c.lower()), min(2, len(columnas)-1))
-        col_saldo_default = next((i for i, c in enumerate(columnas) if 'saldo' in c.lower()), None)
+        col_fecha_default = next((i for i, col in enumerate(columnas) if 'fecha' in col.lower()), 0)
+        col_concepto_default = next((i for i, col in enumerate(columnas) if 'concepto' in col.lower() or 'descrip' in col.lower()), min(1, len(columnas)-1))
+        col_importe_default = next((i for i, col in enumerate(columnas) if 'importe' in col.lower() or 'monto' in col.lower()), min(2, len(columnas)-1))
+        col_saldo_default = next((i for i, col in enumerate(columnas) if 'saldo' in col.lower()), None)
         
         col_fecha = st.sidebar.selectbox("Columna de Fecha:", columnas, index=col_fecha_default)
         col_concepto = st.sidebar.selectbox("Columna de Concepto:", columnas, index=col_concepto_default)
@@ -121,16 +121,16 @@ if uploaded_file is not None:
         
         # Categorización automática
         def categorizar(concepto):
-            c = concepto.lower()
-            if any(k in c for k in ['carref', 'alimen', 'farma', 'super', 'mercadona', 'lidl', 'dia', 'eroski', 'bazar']):
+            c_text = concepto.lower()
+            if any(k in c_text for k in ['carref', 'alimen', 'farma', 'super', 'mercadona', 'lidl', 'dia', 'eroski', 'bazar']):
                 return 'Supermercados y Compras'
-            elif any(k in c for k in ['iberdrola', 'endesa', 'naturgy', 'agua', 'agbar', 'gas', 'luz', 'vodafone', 'orange', 'movistar']):
+            elif any(k in c_text for k in ['iberdrola', 'endesa', 'naturgy', 'agua', 'agbar', 'gas', 'luz', 'vodafone', 'orange', 'movistar']):
                 return 'Suministros y Hogar'
-            elif any(k in c for k in ['parfois', 'mago', 'adela gil', 'amazon', 'zara', 'pago 3 plazos', 'paypal', 'c&a']):
+            elif any(k in c_text for k in ['parfois', 'mago', 'adela gil', 'amazon', 'zara', 'pago 3 plazos', 'paypal', 'c&a']):
                 return 'Ocio y Tiendas'
-            elif any(k in c for k in ['tribut', 'impuest', 'seguro', 'comunidad', 'hipoteca', 'alquiler']):
+            elif any(k in c_text for k in ['tribut', 'impuest', 'seguro', 'comunidad', 'hipoteca', 'alquiler']):
                 return 'Impuestos y Recibos'
-            elif any(k in c for k in ['bizum', 'transf', 'remun']):
+            elif any(k in c_text for k in ['bizum', 'transf', 'remun']):
                 return 'Transferencias / Bizum'
             else:
                 return 'Otros Movimientos'
@@ -211,7 +211,7 @@ if uploaded_file is not None:
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_g2:
-            st.subheader("🍩 Distribución de Gastos por Categoria")
+            st.subheader("🍩 Distribución de Gastos por Categoría")
             df_gastos_cat = df[df['Importe_Clean'] < 0].groupby('Categoria')['Importe_Clean'].sum().abs().reset_index()
             if not df_gastos_cat.empty:
                 fig_pie = px.pie(
