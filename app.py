@@ -13,14 +13,13 @@ st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1tfnhAs8VeaciHXWJ4J0UDxkhvOiuR-_FvDRnHD0tqxI/edit"
 
-@st.cache_data(ttl=60)
 def load_all_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
     
     try:
-        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", ttl="1m")
+        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", ttl=0)
     except Exception:
-        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, ttl="1m")
+        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
 
     cols_esperadas = [
         "ID_Movimiento", "Fecha", "Cuenta / Banco", "Concepto / Descripción",
@@ -37,7 +36,7 @@ def load_all_data():
         df_mov['Importe'] = pd.to_numeric(df_mov['Importe'], errors='coerce').fillna(0.0)
 
     try:
-        df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl="1m")
+        df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl=0)
     except Exception:
         df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría", "Tipo"])
 
@@ -63,8 +62,6 @@ if uploaded_file is not None:
             
             nuevos_registros = []
             
-            # Crear un conjunto (set) con los registros existentes para comparar y evitar duplicados exactos
-            # Clave de duplicado: (Fecha en string, Concepto, Importe)
             existentes_set = set()
             if not df.empty:
                 for _, r in df.iterrows():
@@ -91,15 +88,12 @@ if uploaded_file is not None:
                 fecha_str = str(fecha_dt.date()) if pd.notnull(fecha_dt) else str(pd.Timestamp.now().date())
                 c_limpio = str(concepto_val).strip().lower()
                 
-                # Comprobar si ya existe en la base de datos
                 firma = (fecha_str, c_limpio, importe_float)
                 if firma in existentes_set:
                     duplicados_omitidos += 1
                     continue
                 
-                # Añadir al set local para evitar duplicados dentro del mismo archivo si los hubiera
                 existentes_set.add(firma)
-                
                 tipo_val = "Ingreso" if importe_float >= 0 else "Gasto"
                 
                 nuevos_registros.append({
@@ -129,10 +123,9 @@ if uploaded_file is not None:
                 conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", data=df_actualizado)
                 
                 st.sidebar.success(f"¡Se añadieron {len(nuevos_registros)} nuevos movimientos! ({duplicados_omitidos} duplicados omitidos).")
-                st.cache_data.clear()
                 st.rerun()
             else:
-                st.sidebar.warning(f"No hay movimientos nuevos para añadir. Todos los registros del archivo ya existían ({duplicados_omitidos} omitidos).")
+                st.sidebar.warning(f"No hay movimientos nuevos para añadir. Todos los registros ya existían ({duplicados_omitidos} omitidos).")
             
         except Exception as err:
             st.sidebar.error(f"Error: {err}")
