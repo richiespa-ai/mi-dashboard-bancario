@@ -2,19 +2,17 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import json
-import os
-from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Dashboard de Gestión Bancaria", layout="wide", initial_sidebar_state="expanded")
 
 st.title("💳 Dashboard de Gestión Bancaria y Recibos Futuros")
 
-# --- ARCHIVOS DE PERSISTENCIA ---
-MAPPING_FILE = "categorias_custom.json"
-CAT_LIST_FILE = "categorias_lista.json"
+# --- CONEXIÓN CON GOOGLE SHEETS PARA COMPARTIR ENTRE DISPOSITIVOS ---
+# Reemplaza la siguiente URL por la URL de tu hoja de Google Sheets
+URL_SHEET = "https://docs.google.com/spreadsheets/d/1mFPqCGBfxBw81OWQWOtyCctDOte-BLPML2lEB59SQO8/edit#gid=0"
 
-# Categorías predefinidas por defecto (incluye Gasolina, Garaje, Restauración, etc.)
+# Categorías iniciales por defecto
 CATEGORIAS_INICIALES = [
     'Supermercados y Compras',
     'Gasolina y Vehículo',
@@ -28,45 +26,44 @@ CATEGORIAS_INICIALES = [
     'Otros Movimientos'
 ]
 
-def cargar_lista_categorias():
-    if os.path.exists(CAT_LIST_FILE):
-        try:
-            with open(CAT_LIST_FILE, "r", encoding="utf-8") as f:
-                cats = json.load(f)
-                return sorted(list(set(CATEGORIAS_INICIALES + cats)))
-        except:
-            return CATEGORIAS_INICIALES
-    return CATEGORIAS_INICIALES
-
-def guardar_lista_categorias(lista):
+@st.cache_data(ttl=5)
+def cargar_mapeo_desde_sheets():
     try:
-        with open(CAT_LIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(lista, f, ensure_ascii=False, indent=2)
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df_sheet = conn.read(spreadsheet=URL_SHEET, worksheet="Categorias")
+        if df_sheet is not None and not df_sheet.empty:
+            mapeo = dict(zip(df_sheet['Concepto'].astype(str), df_sheet['Categoria'].astype(str)))
+            lista_cats = sorted(list(set(CATEGORIAS_INICIALES + list(df_sheet['Categoria'].dropna().unique()))))
+            return mapeo, lista_cats
     except Exception as e:
-        st.sidebar.error(f"Error al guardar lista de categorías: {e}")
+        pass
+    return {}, CATEGORIAS_INICIALES
 
-def cargar_mapeo_categorias():
-    if os.path.exists(MAPPING_FILE):
-        try:
-            with open(MAPPING_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def guardar_mapeo_categorias(mapeo):
+def guardar_mapeo_en_sheets(concepto, nueva_cat):
     try:
-        with open(MAPPING_FILE, "w", encoding="utf-8") as f:
-            json.dump(mapeo, f, ensure_ascii=False, indent=2)
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df_sheet = conn.read(spreadsheet=URL_SHEET, worksheet="Categorias")
+        
+        if df_sheet is None or df_sheet.empty:
+            df_sheet = pd.DataFrame(columns=['Concepto', 'Categoria'])
+            
+        # Si el concepto ya existe, actualizarlo; si no, añadirlo
+        if concepto in df_sheet['Concepto'].values:
+            df_sheet.loc[df_sheet['Concepto'] == concepto, 'Categoria'] = nueva_cat
+        else:
+            nueva_fila = pd.DataFrame([{'Concepto': concepto, 'Categoria': nueva_cat}])
+            df_sheet = pd.concat([df_sheet, nueva_fila], ignore_index=True)
+            
+        conn.update(spreadsheet=URL_SHEET, worksheet="Categorias", data=df_sheet)
+        st.cache_data.clear()
     except Exception as e:
-        st.sidebar.error(f"Error al guardar asignaciones: {e}")
+        st.error(f"Error al sincronizar con Google Sheets: {e}")
 
-# Cargar estados en sesión
+# Cargar mapeo persistente
+mapeo_custom, categorias_disponibles = cargar_mapeo_desde_sheets()
+
 if "categorias_disponibles" not in st.session_state:
-    st.session_state["categorias_disponibles"] = cargar_lista_categorias()
-
-if "custom_categories" not in st.session_state:
-    st.session_state["custom_categories"] = cargar_mapeo_categorias()
+    st.session_state["categorias_disponibles"] = categorias_disponibles
 
 # --- CARGA Y LECTURA AUTOMÁTICA DE ARCHIVOS ---
 def cargar_archivo(uploaded_file):
@@ -85,7 +82,6 @@ def cargar_archivo(uploaded_file):
             st.error("Formato no soportado.")
             return None
 
-        # Algoritmo de detección inteligente de cabecera
         header_row = 0
         for idx, row in df_temp.iterrows():
             cells = [str(val).strip().lower() for val in row if pd.notna(val)]
@@ -116,7 +112,7 @@ def cargar_archivo(uploaded_file):
         st.error(f"Error al procesar el archivo: {e}")
         return None
 
-# --- SIDEBAR: INGESTA DE DATOS Y GESTOR DE CATEGORÍAS ---
+# --- SIDEBAR: INGESTA Y GESTOR DE CATEGORÍAS ---
 st.sidebar.header("📥 Ingesta de Datos")
 
 uploaded_file = st.sidebar.file_uploader(
@@ -124,7 +120,7 @@ uploaded_file = st.sidebar.file_uploader(
     type=["csv", "xlsx", "xls"]
 )
 
-# SECCIÓN SIEMPRE VISIBLE: CREAR CATEGORÍA
+# CREAR NUEVA CATEGORÍA
 st.sidebar.divider()
 st.sidebar.subheader("🏷️ Añadir Nuevas Categorías")
 nueva_cat_input = st.sidebar.text_input("Nombre de la nueva categoría:", "")
@@ -134,8 +130,8 @@ if st.sidebar.button("➕ Crear Categoría", use_container_width=True):
         if cat_limpia not in st.session_state["categorias_disponibles"]:
             st.session_state["categorias_disponibles"].append(cat_limpia)
             st.session_state["categorias_disponibles"] = sorted(st.session_state["categorias_disponibles"])
-            guardar_lista_categorias(st.session_state["categorias_disponibles"])
-            st.sidebar.success(f"¡Categoría '{cat_limpia}' guardada!")
+            guardar_mapeo_en_sheets("---NUEVA_CATEGORIA---", cat_limpia)
+            st.sidebar.success(f"¡Categoría '{cat_limpia}' guardada en la nube!")
             st.rerun()
         else:
             st.sidebar.warning("Esa categoría ya existe.")
@@ -148,7 +144,7 @@ if uploaded_file is not None:
     if df_raw is not None and not df_raw.empty:
         st.sidebar.success(f"Archivo cargado correctamente ({len(df_raw)} movimientos)")
         
-        # --- MAPEO AUTOMÁTICO INTELIGENTE DE COLUMNAS ---
+        # --- MAPEO AUTOMÁTICO DE COLUMNAS ---
         st.sidebar.divider()
         st.sidebar.subheader("⚙️ Mapeo de Columnas")
         columnas = [str(col_item).strip() for col_item in df_raw.columns]
@@ -158,7 +154,6 @@ if uploaded_file is not None:
         col_concepto_default = next((i for i, col in enumerate(columnas) if 'concepto' in col.lower() or 'descrip' in col.lower()), min(1, len(columnas)-1))
         col_importe_default = next((i for i, col in enumerate(columnas) if 'importe' in col.lower() or 'monto' in col.lower()), min(2, len(columnas)-1))
         
-        # Detección predefinida automática de la columna de Saldo
         col_saldo_found = next((col for col in columnas if 'saldo' in col.lower()), None)
         
         col_fecha = st.sidebar.selectbox("Columna de Fecha:", columnas, index=col_fecha_default)
@@ -169,8 +164,6 @@ if uploaded_file is not None:
         idx_saldo = opciones_saldo.index(col_saldo_found) if col_saldo_found in opciones_saldo else 0
         col_saldo = st.sidebar.selectbox("Columna de Saldo:", opciones_saldo, index=idx_saldo)
         
-        # Filtro de búsqueda
-        st.sidebar.subheader("🔍 Filtro de Movimientos")
         search_query = st.sidebar.text_input("Buscar por palabra clave:", "")
 
         # --- LIMPIEZA DE DATOS ---
@@ -200,16 +193,15 @@ if uploaded_file is not None:
         df['Importe_Clean'] = df[col_importe].apply(limpiar_importe)
         df['Concepto_Clean'] = df[col_concepto].astype(str).str.strip()
         
-        # Categorización inteligente con patrones predefinidos
         def categorizar(concepto):
             c_text = concepto.lower()
             
-            # 1. Reglas personalizadas previamente guardadas
-            for key_concepto, cat_custom in st.session_state["custom_categories"].items():
-                if key_concepto.lower() in c_text:
+            # 1. Priorizar mapeo guardado en Google Sheets
+            for key_concepto, cat_custom in mapeo_custom.items():
+                if key_concepto.lower() in c_text and key_concepto != "---NUEVA_CATEGORIA---":
                     return cat_custom
 
-            # 2. Asignación automática por palabras clave
+            # 2. Reglas por defecto
             if any(k in c_text for k in ['repsol', 'cepsa', 'bp', 'shell', 'gasolinera', 'combustible', 'carburante', 'norauto']):
                 return 'Gasolina y Vehículo'
             elif any(k in c_text for k in ['parking', 'garaje', 'estacionamiento', 'parquimetro', 'emasa', 'saba', 'eysa']):
@@ -233,7 +225,7 @@ if uploaded_file is not None:
 
         df['Categoria'] = df['Concepto_Clean'].apply(categorizar)
         
-        # --- CÁLCULO DE SALDOS E HISTÓRICO ---
+        # --- CÁLCULO DE SALDOS ---
         if col_saldo != "-- No incluir --":
             df['Saldo_Clean'] = df[col_saldo].apply(limpiar_importe)
             saldo_actual = df['Saldo_Clean'].iloc[-1]
@@ -271,7 +263,7 @@ if uploaded_file is not None:
         compromisos = df_futuros['Importe Estimado (€)'].sum() if not df_futuros.empty else 0.0
         saldo_disponible = saldo_actual - compromisos
         
-        # --- DASHBOARD PRINCIPAL: MÉTRICAS ---
+        # --- DASHBOARD PRINCIPAL ---
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Saldo Inicial Periodo", f"{saldo_inicial:,.2f} €")
         col2.metric("Saldo Actual en Cuenta", f"{saldo_actual:,.2f} €")
@@ -280,7 +272,7 @@ if uploaded_file is not None:
         
         st.divider()
         
-        # --- FILA DE GRÁFICOS Y ANÁLISIS ---
+        # --- GRÁFICOS ---
         col_g1, col_g2 = st.columns([1, 1])
         
         with col_g1:
@@ -324,7 +316,6 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # --- SEGUNDA FILA DE ANÁLISIS ---
         col_l1, col_l2 = st.columns([1, 1])
 
         with col_l1:
@@ -352,23 +343,10 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # --- SECCIÓN DE MAYORES GASTOS ---
-        st.subheader("🔝 Top 5 Mayores Gastos del Periodo")
-        top_gastos = df[df['Importe_Clean'] < 0].sort_values('Importe_Clean', ascending=True).head(5)
-        
-        cols_top = st.columns(len(top_gastos))
-        for i, (_, row) in enumerate(top_gastos.iterrows()):
-            with cols_top[i]:
-                st.caption(row['Fecha_Clean'].strftime('%Y-%m-%d'))
-                st.metric(label=row['Concepto_Clean'][:18], value=f"{row['Importe_Clean']:,.2f} €")
-
-        st.divider()
-
-        # --- TABLA INTERACTIVA CON DESPLEGABLE BUSCABLE ---
+        # --- TABLA INTERACTIVA ---
         st.subheader("📋 Movimientos Procesados")
-        st.caption("🔍 Puedes buscar dentro de la lista de categorías escribiendo directamente. Haz doble clic sobre cualquier categoría para editarla.")
+        st.caption("☁️ Todos los cambios de categoría realizados se guardan automáticamente en la nube (Google Sheets) para que los vea cualquier usuario desde cualquier dispositivo.")
 
-        # Filtrado por búsqueda
         df_filtered = df.copy()
         if search_query:
             df_filtered = df_filtered[df_filtered['Concepto_Clean'].str.contains(search_query, case=False, na=False)]
@@ -377,13 +355,12 @@ if uploaded_file is not None:
         df_display['Fecha_Clean'] = df_display['Fecha_Clean'].dt.strftime('%Y-%m-%d')
         df_display.columns = ['Fecha', 'Concepto', 'Categoría', 'Importe (€)']
 
-        # Configuración del editor interactivo con selector con filtro/búsqueda integrados
         edited_df = st.data_editor(
             df_display,
             column_config={
                 "Categoría": st.column_config.SelectboxColumn(
                     "Categoría",
-                    help="Haz clic e inicia a escribir para buscar en la lista",
+                    help="Escribe para buscar o cambiar la categoría",
                     options=st.session_state["categorias_disponibles"],
                     required=True
                 ),
@@ -400,22 +377,16 @@ if uploaded_file is not None:
             key="tabla_interactiva"
         )
 
-        # Detectar modificaciones y guardarlas de forma persistente
         if edited_df is not None:
-            cambios = False
             for idx in edited_df.index:
                 concepto_item = edited_df.loc[idx, 'Concepto']
                 nueva_cat_item = edited_df.loc[idx, 'Categoría']
-                
                 cat_orig = df_display.loc[idx, 'Categoría']
+                
                 if nueva_cat_item != cat_orig:
-                    st.session_state["custom_categories"][concepto_item] = nueva_cat_item
-                    cambios = True
-
-            if cambios:
-                guardar_mapeo_categorias(st.session_state["custom_categories"])
-                st.toast("✅ Preferencia de categoría guardada de forma permanente", icon="💾")
-                st.rerun()
+                    guardar_mapeo_en_sheets(concepto_item, nueva_cat_item)
+                    st.toast("☁️ Cambio guardado en la nube para todos los dispositivos", icon="✅")
+                    st.rerun()
 
 else:
     st.info("👋 Por favor, sube un archivo **CSV** o **Excel (.xlsx, .xls)** en el panel de la izquierda para comenzar.")
