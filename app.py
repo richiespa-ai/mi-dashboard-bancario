@@ -16,7 +16,7 @@ st.title("🏦 Dashboard Bancario y Control de Finanzas")
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1tfnhAs8VeaciHXWJ4J0UDxkhvOiuR-_FvDRnHD0tqxI/edit"
 
 # ⚠️ PEGA AQUÍ LA URL DE TU GOOGLE APPS SCRIPT (la que termina en /exec)
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz.../exec" 
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec" 
 
 def limpiar_importe(val):
     """Convierte de forma ultra robusta cualquier formato de moneda a número."""
