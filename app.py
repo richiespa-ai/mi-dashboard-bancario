@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import requests
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(
@@ -12,10 +13,11 @@ st.set_page_config(
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1tfnhAs8VeaciHXWJ4J0UDxkhvOiuR-_FvDRnHD0tqxI/edit"
+# Pega aquí la URL de tu Google Apps Script (/exec)
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec"
 
-def load_all_data():
+def load_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
-    
     try:
         df_mov = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", ttl=0)
     except Exception:
@@ -35,100 +37,71 @@ def load_all_data():
         df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
         df_mov['Importe'] = pd.to_numeric(df_mov['Importe'], errors='coerce').fillna(0.0)
 
-    try:
-        df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl=0)
-    except Exception:
-        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría", "Tipo"])
+    return df_mov
 
-    return df_mov, df_cat
+df = load_data()
 
-try:
-    df, df_cat = load_all_data()
-except Exception as e:
-    st.error(f"Error al conectar con Google Sheets: {e}")
-    st.stop()
-
-# --- SIDEBAR: CARGA DE EXCEL CON ANTIDUPLICADOS ---
-st.sidebar.header("📁 Importar Archivo")
-uploaded_file = st.sidebar.file_uploader("Subir extracto (Excel o CSV)", type=["xlsx", "xls", "csv"])
+# --- SIDEBAR: CARGA DE EXCEL ---
+st.sidebar.header("📁 Importar Extracto")
+uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
 
 if uploaded_file is not None:
     if st.sidebar.button("Volcar a Google Sheets"):
-        try:
-            if uploaded_file.name.endswith(".csv"):
-                df_excel = pd.read_csv(uploaded_file)
-            else:
-                df_excel = pd.read_excel(uploaded_file)
-            
-            nuevos_registros = []
-            
-            existentes_set = set()
-            if not df.empty:
-                for _, r in df.iterrows():
-                    f_str = str(r['Fecha'].date()) if pd.notnull(r['Fecha']) else ""
-                    c_str = str(r['Concepto / Descripción']).strip().lower()
-                    i_val = round(float(r['Importe']), 2)
-                    existentes_set.add((f_str, c_str, i_val))
-            
-            start_id = len(df) + 1
-            duplicados_omitidos = 0
-            
-            for idx, row in df_excel.iterrows():
-                fecha_val = row.get("Fecha") or row.get("Fecha Valor") or row.get("F.Operación")
-                concepto_val = row.get("Concepto") or row.get("Descripción") or "Movimiento Importado"
-                importe_val = row.get("Importe") or row.get("Monto") or 0.0
-                
-                try:
-                    importe_float = float(str(importe_val).replace(".", "").replace(",", ".")) if isinstance(importe_val, str) else float(importe_val)
-                    importe_float = round(importe_float, 2)
-                except ValueError:
-                    importe_float = 0.0
-                
-                fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
-                fecha_str = str(fecha_dt.date()) if pd.notnull(fecha_dt) else str(pd.Timestamp.now().date())
-                c_limpio = str(concepto_val).strip().lower()
-                
-                firma = (fecha_str, c_limpio, importe_float)
-                if firma in existentes_set:
-                    duplicados_omitidos += 1
-                    continue
-                
-                existentes_set.add(firma)
-                tipo_val = "Ingreso" if importe_float >= 0 else "Gasto"
-                
-                nuevos_registros.append({
-                    "ID_Movimiento": f"MOV-{start_id + len(nuevos_registros):04d}",
-                    "Fecha": fecha_str,
-                    "Cuenta / Banco": "Banco Importado",
-                    "Concepto / Descripción": str(concepto_val),
-                    "Tipo": tipo_val,
-                    "Categoría": "Sin Categorizar",
-                    "Subcategoría": "Pendiente",
-                    "Importe": importe_float,
-                    "Estado": "Pendiente",
-                    "Notas / Observaciones": f"Importado de {uploaded_file.name}"
-                })
-            
-            if nuevos_registros:
-                df_nuevos = pd.DataFrame(nuevos_registros)
-                
-                if df.empty:
-                    df_actualizado = df_nuevos
+        if APPS_SCRIPT_URL == "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI":
+            st.sidebar.error("Falta configurar la URL del Apps Script en el código.")
+        else:
+            try:
+                if uploaded_file.name.endswith(".csv"):
+                    df_excel = pd.read_csv(uploaded_file)
                 else:
-                    df_copy = df.copy()
-                    df_copy['Fecha'] = df_copy['Fecha'].dt.strftime('%Y-%m-%d')
-                    df_actualizado = pd.concat([df_copy, df_nuevos], ignore_index=True)
+                    df_excel = pd.read_excel(uploaded_file)
                 
-                conn = st.connection("gsheets", type=GSheetsConnection)
-                conn.update(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", data=df_actualizado)
+                nuevas_filas = []
+                start_id = len(df) + 1
                 
-                st.sidebar.success(f"¡Se añadieron {len(nuevos_registros)} nuevos movimientos! ({duplicados_omitidos} duplicados omitidos).")
-                st.rerun()
-            else:
-                st.sidebar.warning(f"No hay movimientos nuevos para añadir. Todos los registros ya existían ({duplicados_omitidos} omitidos).")
-            
-        except Exception as err:
-            st.sidebar.error(f"Error: {err}")
+                for idx, row in df_excel.iterrows():
+                    fecha_val = row.get("Fecha") or row.get("Fecha Valor") or row.get("F.Operación")
+                    concepto_val = row.get("Concepto") or row.get("Descripción") or "Movimiento Importado"
+                    importe_val = row.get("Importe") or row.get("Monto") or 0.0
+                    
+                    try:
+                        importe_float = float(str(importe_val).replace(".", "").replace(",", ".")) if isinstance(importe_val, str) else float(importe_val)
+                        importe_float = round(importe_float, 2)
+                    except ValueError:
+                        importe_float = 0.0
+                    
+                    fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
+                    fecha_str = str(fecha_dt.date()) if pd.notnull(fecha_dt) else str(pd.Timestamp.now().date())
+                    tipo_val = "Ingreso" if importe_float >= 0 else "Gasto"
+                    
+                    # Estructura de la fila en orden exacto de las columnas del Sheet
+                    fila_tabla = [
+                        f"MOV-{start_id + len(nuevas_filas):04d}",
+                        fecha_str,
+                        "Banco Importado",
+                        str(concepto_val),
+                        tipo_val,
+                        "Sin Categorizar",
+                        "Pendiente",
+                        importe_float,
+                        "Pendiente",
+                        f"Importado de {uploaded_file.name}"
+                    ]
+                    nuevas_filas.append(fila_tabla)
+                
+                if nuevas_filas:
+                    # Enviar mediante POST al Apps Script de forma totalmente gratuita y sin GCP
+                    response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevas_filas})
+                    if response.status_code == 200:
+                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados en Google Sheets!")
+                        st.rerun()
+                    else:
+                        st.sidebar.error(f"Error al sincronizar con Google Sheets: {response.text}")
+                else:
+                    st.sidebar.warning("No hay filas válidas en el archivo.")
+                    
+            except Exception as err:
+                st.sidebar.error(f"Error procesando el archivo: {err}")
 
 # --- MÉTRICAS ---
 ingresos = df[df["Importe"] > 0]["Importe"].sum() if not df.empty else 0.0
@@ -154,4 +127,4 @@ if not df.empty:
         hide_index=True
     )
 else:
-    st.warning("No hay movimientos registrados todavía.")
+    st.warning("Sube un archivo Excel o CSV en el menú lateral para ver los movimientos.")
