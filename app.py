@@ -280,7 +280,7 @@ if uploaded_file is not None:
         df_display['Fecha_Clean'] = df_display['Fecha_Clean'].dt.strftime('%Y-%m-%d')
         df_display.columns = ['Fecha', 'Concepto', 'Categoría', 'Importe (€)']
         
-        # Formato de color (Verde clarito / Rojo clarito)
+        # Formato de color (Soporta compatibilidad con map / applymap)
         def color_importe(val):
             if val < 0:
                 return 'background-color: #ffcdd2; color: #b71c1c; font-weight: bold;'
@@ -288,8 +288,14 @@ if uploaded_file is not None:
                 return 'background-color: #c8e6c9; color: #1b5e20; font-weight: bold;'
             return ''
 
+        styler = df_display.style
+        if hasattr(styler, 'map'):
+            styler = styler.map(color_importe, subset=['Importe (€)'])
+        else:
+            styler = styler.applymap(color_importe, subset=['Importe (€)'])
+
         st.dataframe(
-            df_display.style.applymap(color_importe, subset=['Importe (€)']).format({'Importe (€)': '{:,.2f} €'}),
+            styler.format({'Importe (€)': '{:,.2f} €'}),
             use_container_width=True,
             height=400
         )
