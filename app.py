@@ -6,36 +6,70 @@ st.set_page_config(page_title="Dashboard de Gestión Bancaria", layout="wide", i
 
 st.title("💳 Dashboard de Gestión Bancaria y Recibos Futuros")
 
-# --- FUNCIÓN DE LECTURA DE ARCHIVOS ---
-def cargar_archivo(uploaded_file, skip_rows):
+# --- FUNCION DE LECTURA DE ARCHIVOS ---
+def cargar_archivo(uploaded_file, skip_rows_manual):
     file_name = uploaded_file.name.lower()
     try:
         uploaded_file.seek(0)
+        # Lectura inicial sin cabecera para inspeccionar la estructura
         if file_name.endswith('.csv'):
             try:
-                df = pd.read_csv(uploaded_file, encoding='utf-8', skiprows=skip_rows)
+                df_temp = pd.read_csv(uploaded_file, encoding='utf-8', header=None)
             except UnicodeDecodeError:
                 uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python', skiprows=skip_rows)
+                df_temp = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python', header=None)
         elif file_name.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(uploaded_file, skiprows=skip_rows)
+            df_temp = pd.read_excel(uploaded_file, header=None)
         else:
-            st.error("Formato no soportado. Sube un CSV o Excel (.xlsx, .xls).")
+            st.error("Formato no soportado.")
             return None
-        
-        # Eliminar columnas sin nombre / vacías
+
+        # Si el usuario especifica un salto manual (>0), se usa directamente
+        if skip_rows_manual > 0:
+            header_row = skip_rows_manual
+        else:
+            # Algoritmo de detección inteligente: requiere coincidencia triple
+            header_row = 0
+            for idx, row in df_temp.iterrows():
+                cells = [str(val).strip().lower() for val in row if pd.notna(val)]
+                
+                has_fecha = any('fecha' in c for c in cells)
+                has_concepto = any(k in c for c in cells for k in ['concepto', 'detalle', 'descripcion', 'descripción'])
+                has_importe = any(k in c for c in cells for k in ['importe', 'monto', 'saldo', 'cantidad'])
+                
+                if has_fecha and has_concepto and has_importe:
+                    header_row = idx
+                    break
+
+        # Cargar dataframe definitivo
+        uploaded_file.seek(0)
+        if file_name.endswith('.csv'):
+            try:
+                df = pd.read_csv(uploaded_file, encoding='utf-8', skiprows=header_row)
+            except:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python', skiprows=header_row)
+        else:
+            df = pd.read_excel(uploaded_file, skiprows=header_row)
+            
+        # Limpieza de columnas no válidas
         df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed', na=False)]
         df = df.dropna(how='all')
-        return df
+        
+        return df, header_row
+        
     except Exception as e:
         st.error(f"Error al procesar el archivo: {e}")
-        return None
+        return None, 0
 
 # --- SIDEBAR: CARGA DE ARCHIVO ---
 st.sidebar.header("📥 Ingesta de Datos")
 
-# Ajuste manual por si el banco tiene filas con textos/logos arriba
-skip_rows = st.sidebar.number_input("Filas a ignorar al inicio (cabecera):", min_value=0, max_value=20, value=0, step=1)
+skip_rows_manual = st.sidebar.number_input(
+    "Forzar filas a ignorar (0 = automático):", 
+    min_value=0, max_value=30, value=0, step=1,
+    help="Si el archivo tiene texto o logos arriba y falla la detección, ajusta este valor."
+)
 
 uploaded_file = st.sidebar.file_uploader(
     "Sube el extracto bancario (CSV o Excel)", 
@@ -43,12 +77,12 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 if uploaded_file is not None:
-    df_raw = cargar_archivo(uploaded_file, skip_rows)
+    df_raw, header_row_used = cargar_archivo(uploaded_file, skip_rows_manual)
     
     if df_raw is not None and not df_raw.empty:
-        st.sidebar.success(f"Archivo cargado: **{len(df_raw)} movimientos**")
+        st.sidebar.success(f"Archivo cargado ({len(df_raw)} movimientos) | Cabecera en fila: {header_row_used}")
         
-        # --- MAPEO INTELIGENTE Y MANUAL DE COLUMNAS ---
+        # --- MAPEO INTELIGENTE DE COLUMNAS ---
         st.sidebar.subheader("⚙️ Mapeo de Columnas")
         columnas = [str(c).strip() for c in df_raw.columns]
         df_raw.columns = columnas
@@ -93,11 +127,11 @@ if uploaded_file is not None:
         df['Importe_Clean'] = df[col_importe].apply(limpiar_importe)
         df['Concepto_Clean'] = df[col_concepto].astype(str).str.strip()
         
-        # --- MOTOR DE PREDICCIÓN DE RECIBOS ---
+        # --- MOTOR DE PREDICCIÓN DE RECIBOS RECURRENTES ---
         conceptos_clave = [
             'luz', 'endesa', 'iberdrola', 'naturgy', 'agbar', 'agua', 'gas',
             'alquiler', 'hipoteca', 'comunidad', 'netflix', 'spotify', 'gimnasio',
-            'amazon', 'seguro', 'vodafone', 'movistar', 'orange', 'paypal', 'carref', 'tribut'
+            'amazon', 'seguro', 'vodafone', 'movistar', 'orange', 'paypal', 'carref', 'bazar'
         ]
         
         gastos_futuros = []
@@ -120,7 +154,7 @@ if uploaded_file is not None:
 
         df_futuros = pd.DataFrame(gastos_futuros)
         
-        # --- CÁLCULO DE MÉTRICAS ---
+        # --- CÁLCULO DE MÉTRICAS Y SALDOS ---
         if col_saldo != "-- No incluir --":
             df['Saldo_Clean'] = df[col_saldo].apply(limpiar_importe)
             saldo_actual = df['Saldo_Clean'].iloc[0]
@@ -130,7 +164,7 @@ if uploaded_file is not None:
         compromisos = df_futuros['Importe Estimado (€)'].sum() if not df_futuros.empty else 0.0
         saldo_disponible = saldo_actual - compromisos
         
-        # --- DASHBOARD ---
+        # --- DASHBOARD PRINCIPAL ---
         col1, col2, col3 = st.columns(3)
         col1.metric("Saldo Real Actual", f"{saldo_actual:,.2f} €")
         col2.metric("Recibos Pendientes Estimados", f"-{compromisos:,.2f} €")
