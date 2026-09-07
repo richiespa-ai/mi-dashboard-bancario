@@ -13,8 +13,24 @@ st.set_page_config(
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1tfnhAs8VeaciHXWJ4J0UDxkhvOiuR-_FvDRnHD0tqxI/edit"
-# Reemplaza con tu URL de Google Apps Script (/exec)
+# Pega aquí tu URL de Google Apps Script (/exec)
 APPS_SCRIPT_URL = "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI"
+
+def limpiar_importe(val):
+    """Convierte formatos de importe españoles/internacionales a float de forma robusta."""
+    if pd.isna(val):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).replace("€", "").replace(" ", "").strip()
+    if "." in s and "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except:
+        return 0.0
 
 @st.cache_data(ttl=60)
 def load_all_data():
@@ -38,13 +54,13 @@ def load_all_data():
             if col not in df_mov.columns:
                 df_mov[col] = None
         df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
-        df_mov['Importe'] = pd.to_numeric(df_mov['Importe'], errors='coerce').fillna(0.0)
+        df_mov['Importe'] = df_mov['Importe'].apply(limpiar_importe)
 
     # 2. Cargar pestaña 'Categorías'
     try:
         df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl="1m")
     except Exception:
-        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría", "Tipo"])
+        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría", "Tipo", "Palabras Clave"])
 
     return df_mov, df_cat
 
@@ -53,6 +69,23 @@ try:
 except Exception as e:
     st.error(f"Error al conectar con Google Sheets: {e}")
     st.stop()
+
+def categorizar_concepto(concepto, df_cat):
+    """Asigna categoría basándose en palabras clave de la tabla de categorías."""
+    if df_cat.empty or not concepto:
+        return "Sin Categorizar", "General"
+    
+    concepto_lower = str(concepto).lower()
+    for _, row in df_cat.iterrows():
+        # Si la tabla tiene columna de palabras clave o usa la propia subcategoría/categoría
+        keywords = str(row.get("Palabras Clave", row.get("Subcategoría", ""))).lower()
+        cat_principal = row.get("Categoría Principal", "Otros")
+        subcat = row.get("Subcategoría", "General")
+        
+        if keywords and any(kw.strip() in concepto_lower for kw in keywords.split(",")):
+            return cat_principal, subcat
+            
+    return "Sin Categorizar", "Pendiente"
 
 # --- SIDEBAR: CARGA DE EXCEL ---
 st.sidebar.header("📁 Importar Extracto")
@@ -77,15 +110,15 @@ if uploaded_file is not None:
                     concepto_val = row.get("Concepto") or row.get("Descripción") or "Movimiento Importado"
                     importe_val = row.get("Importe") or row.get("Monto") or 0.0
                     
-                    try:
-                        importe_float = float(str(importe_val).replace(".", "").replace(",", ".")) if isinstance(importe_val, str) else float(importe_val)
-                        importe_float = round(importe_float, 2)
-                    except ValueError:
-                        importe_float = 0.0
+                    importe_float = limpiar_importe(importe_val)
+                    importe_float = round(importe_float, 2)
                     
                     fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
                     fecha_str = str(fecha_dt.date()) if pd.notnull(fecha_dt) else str(pd.Timestamp.now().date())
                     tipo_val = "Ingreso" if importe_float >= 0 else "Gasto"
+                    
+                    # Categorización automática con la tabla de categorías
+                    cat_calc, subcat_calc = categorizar_concepto(concepto_val, df_cat)
                     
                     fila_tabla = [
                         f"MOV-{start_id + len(nuevas_filas):04d}",
@@ -93,8 +126,8 @@ if uploaded_file is not None:
                         "Banco Importado",
                         str(concepto_val),
                         tipo_val,
-                        "Sin Categorizar",
-                        "Pendiente",
+                        cat_calc,
+                        subcat_calc,
                         importe_float,
                         "Pendiente",
                         f"Importado de {uploaded_file.name}"
