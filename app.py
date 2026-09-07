@@ -12,12 +12,14 @@ st.set_page_config(
 
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
+# URL de tu base de datos en Google Sheets
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1tfnhAs8VeaciHXWJ4J0UDxkhvOiuR-_FvDRnHD0tqxI/edit"
-# Pega aquí tu URL de Google Apps Script (/exec)
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec"
+
+# ⚠️ PEGA AQUÍ LA URL DE TU GOOGLE APPS SCRIPT (la que termina en /exec)
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz.../exec" 
 
 def limpiar_importe(val):
-    """Convierte formatos de importe españoles/internacionales a float de forma robusta."""
+    """Convierte de forma ultra robusta cualquier formato de moneda a número."""
     if pd.isna(val):
         return 0.0
     if isinstance(val, (int, float)):
@@ -32,35 +34,39 @@ def limpiar_importe(val):
     except:
         return 0.0
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def load_all_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # 1. Cargar pestaña 'Movimientos'
+    # Cargar pestaña 'Movimientos'
     try:
-        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", ttl="1m")
+        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", ttl=0)
     except Exception:
-        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, ttl="1m")
+        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
 
     cols_esperadas = [
         "ID_Movimiento", "Fecha", "Cuenta / Banco", "Concepto / Descripción",
         "Tipo", "Categoría", "Subcategoría", "Importe", "Estado", "Notas / Observaciones"
     ]
     
-    if df_mov.empty or not any(col in df_mov.columns for col in ["Importe", "Fecha"]):
+    if df_mov.empty:
         df_mov = pd.DataFrame(columns=cols_esperadas)
     else:
+        # Normalizar nombres de columnas por si acaso
+        df_mov.columns = [str(c).strip() for c in df_mov.columns]
         for col in cols_esperadas:
             if col not in df_mov.columns:
                 df_mov[col] = None
+        
         df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
         df_mov['Importe'] = df_mov['Importe'].apply(limpiar_importe)
 
-    # 2. Cargar pestaña 'Categorías'
+    # Cargar pestaña 'Categorías'
     try:
-        df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl="1m")
+        df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl=0)
+        df_cat.columns = [str(c).strip() for c in df_cat.columns]
     except Exception:
-        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría", "Tipo", "Palabras Clave"])
+        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría", "Tipo"])
 
     return df_mov, df_cat
 
@@ -71,18 +77,16 @@ except Exception as e:
     st.stop()
 
 def categorizar_concepto(concepto, df_cat):
-    """Asigna categoría basándose en palabras clave de la tabla de categorías."""
+    """Asigna categoría basándose en la tabla Categorías."""
     if df_cat.empty or not concepto:
         return "Sin Categorizar", "General"
     
     concepto_lower = str(concepto).lower()
     for _, row in df_cat.iterrows():
-        # Si la tabla tiene columna de palabras clave o usa la propia subcategoría/categoría
-        keywords = str(row.get("Palabras Clave", row.get("Subcategoría", ""))).lower()
-        cat_principal = row.get("Categoría Principal", "Otros")
-        subcat = row.get("Subcategoría", "General")
+        subcat = str(row.get("Subcategoría", ""))
+        cat_principal = str(row.get("Categoría Principal", "Otros"))
         
-        if keywords and any(kw.strip() in concepto_lower for kw in keywords.split(",")):
+        if subcat and subcat.lower() in concepto_lower:
             return cat_principal, subcat
             
     return "Sin Categorizar", "Pendiente"
@@ -93,8 +97,8 @@ uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["x
 
 if uploaded_file is not None:
     if st.sidebar.button("Volcar a Google Sheets"):
-        if APPS_SCRIPT_URL == "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI":
-            st.sidebar.error("Falta configurar la URL del Apps Script en el código.")
+        if APPS_SCRIPT_URL.startswith("https://script.google.com/macros/s/AKfycbz...") or not APPS_SCRIPT_URL.startswith("https://"):
+            st.sidebar.error("❌ Debes sustituir 'APPS_SCRIPT_URL' en el código por tu URL real de Google Apps Script.")
         else:
             try:
                 if uploaded_file.name.endswith(".csv"):
@@ -102,13 +106,14 @@ if uploaded_file is not None:
                 else:
                     df_excel = pd.read_excel(uploaded_file)
                 
+                df_excel.columns = [str(c).strip() for c in df_excel.columns]
                 nuevas_filas = []
                 start_id = len(df) + 1
                 
                 for idx, row in df_excel.iterrows():
-                    fecha_val = row.get("Fecha") or row.get("Fecha Valor") or row.get("F.Operación")
-                    concepto_val = row.get("Concepto") or row.get("Descripción") or "Movimiento Importado"
-                    importe_val = row.get("Importe") or row.get("Monto") or 0.0
+                    fecha_val = row.get("Fecha") or row.get("Fecha Valor") or row.get("F.Operación") or row.get("FECHA")
+                    concepto_val = row.get("Concepto") or row.get("Descripción") or row.get("CONCEPTO") or "Movimiento Importado"
+                    importe_val = row.get("Importe") or row.get("Monto") or row.get("IMPORTE") or 0.0
                     
                     importe_float = limpiar_importe(importe_val)
                     importe_float = round(importe_float, 2)
@@ -117,7 +122,6 @@ if uploaded_file is not None:
                     fecha_str = str(fecha_dt.date()) if pd.notnull(fecha_dt) else str(pd.Timestamp.now().date())
                     tipo_val = "Ingreso" if importe_float >= 0 else "Gasto"
                     
-                    # Categorización automática con la tabla de categorías
                     cat_calc, subcat_calc = categorizar_concepto(concepto_val, df_cat)
                     
                     fila_tabla = [
@@ -141,9 +145,9 @@ if uploaded_file is not None:
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.sidebar.error(f"Error al sincronizar con Google Sheets: {response.text}")
+                        st.sidebar.error(f"Error en Apps Script: {response.text}")
                 else:
-                    st.sidebar.warning("No hay filas válidas en el archivo.")
+                    st.sidebar.warning("No se encontraron filas válidas en el archivo.")
                     
             except Exception as err:
                 st.sidebar.error(f"Error procesando el archivo: {err}")
@@ -159,7 +163,6 @@ banco_sel = st.sidebar.selectbox("Cuenta / Banco", bancos)
 categorias = ["Todas"] + sorted(list(df["Categoría"].dropna().unique())) if not df.empty else ["Todas"]
 cat_sel = st.sidebar.selectbox("Categoría", categorias)
 
-# Aplicar Filtros
 df_filtered = df.copy()
 if not df_filtered.empty:
     if banco_sel != "Todos":
