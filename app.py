@@ -10,19 +10,21 @@ st.set_page_config(page_title="Dashboard de Gestión Bancaria", layout="wide", i
 
 st.title("💳 Dashboard de Gestión Bancaria y Recibos Futuros")
 
-# --- ARCHIVOS DE PERSISTENCIA DE CATEGORÍAS ---
+# --- ARCHIVOS DE PERSISTENCIA ---
 MAPPING_FILE = "categorias_custom.json"
 CAT_LIST_FILE = "categorias_lista.json"
 
-# Categorías por defecto iniciales (Incluyendo Gasolina, Garaje, etc.)
-CATEGORIAS_BASE = [
+# Categorías predefinidas por defecto (incluye Gasolina, Garaje, Restauración, etc.)
+CATEGORIAS_INICIALES = [
     'Supermercados y Compras',
-    'Suministros y Hogar',
     'Gasolina y Vehículo',
     'Parking y Garaje',
     'Ocio y Restauración',
+    'Suministros y Hogar',
     'Impuestos y Recibos',
     'Transferencias / Bizum',
+    'Salud y Farmacia',
+    'Ropa y Tiendas',
     'Otros Movimientos'
 ]
 
@@ -31,10 +33,10 @@ def cargar_lista_categorias():
         try:
             with open(CAT_LIST_FILE, "r", encoding="utf-8") as f:
                 cats = json.load(f)
-                return sorted(list(set(CATEGORIAS_BASE + cats)))
+                return sorted(list(set(CATEGORIAS_INICIALES + cats)))
         except:
-            return CATEGORIAS_BASE
-    return CATEGORIAS_BASE
+            return CATEGORIAS_INICIALES
+    return CATEGORIAS_INICIALES
 
 def guardar_lista_categorias(lista):
     try:
@@ -57,16 +59,16 @@ def guardar_mapeo_categorias(mapeo):
         with open(MAPPING_FILE, "w", encoding="utf-8") as f:
             json.dump(mapeo, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        st.sidebar.error(f"Error al guardar asignación de categorías: {e}")
+        st.sidebar.error(f"Error al guardar asignaciones: {e}")
 
-# Inicializar Estados en Session State
+# Cargar estados en sesión
 if "categorias_disponibles" not in st.session_state:
     st.session_state["categorias_disponibles"] = cargar_lista_categorias()
 
 if "custom_categories" not in st.session_state:
     st.session_state["custom_categories"] = cargar_mapeo_categorias()
 
-# --- DETECCIÓN AUTOMÁTICA Y CARGA DE ARCHIVOS ---
+# --- CARGA Y LECTURA AUTOMÁTICA DE ARCHIVOS ---
 def cargar_archivo(uploaded_file):
     file_name = uploaded_file.name.lower()
     try:
@@ -89,7 +91,7 @@ def cargar_archivo(uploaded_file):
             cells = [str(val).strip().lower() for val in row if pd.notna(val)]
             has_fecha = any('fecha' in item for item in cells)
             has_concepto = any(k in item for item in cells for k in ['concepto', 'detalle', 'descripcion', 'descripción'])
-            has_importe = any(k in item for item in cells for k in ['importe', 'monto', 'saldo', 'cantidad'])
+            has_importe = any(k in item for item in cells for k in ['importe', 'monto', 'cantidad'])
             
             if has_fecha and has_concepto and has_importe:
                 header_row = idx
@@ -114,7 +116,7 @@ def cargar_archivo(uploaded_file):
         st.error(f"Error al procesar el archivo: {e}")
         return None
 
-# --- SIDEBAR: INGESTA, CATEGORÍAS Y FILTROS ---
+# --- SIDEBAR: INGESTA DE DATOS Y GESTOR DE CATEGORÍAS ---
 st.sidebar.header("📥 Ingesta de Datos")
 
 uploaded_file = st.sidebar.file_uploader(
@@ -122,21 +124,21 @@ uploaded_file = st.sidebar.file_uploader(
     type=["csv", "xlsx", "xls"]
 )
 
-# --- SECCIÓN SIDEBAR: GESTIÓN DE CATEGORÍAS ---
+# SECCIÓN SIEMPRE VISIBLE: CREAR CATEGORÍA
 st.sidebar.divider()
-st.sidebar.subheader("🏷️ Crear Nueva Categoría")
+st.sidebar.subheader("🏷️ Añadir Nuevas Categorías")
 nueva_cat_input = st.sidebar.text_input("Nombre de la nueva categoría:", "")
-if st.sidebar.button("➕ Añadir Categoría", use_container_width=True):
+if st.sidebar.button("➕ Crear Categoría", use_container_width=True):
     cat_limpia = nueva_cat_input.strip()
     if cat_limpia:
         if cat_limpia not in st.session_state["categorias_disponibles"]:
             st.session_state["categorias_disponibles"].append(cat_limpia)
             st.session_state["categorias_disponibles"] = sorted(st.session_state["categorias_disponibles"])
             guardar_lista_categorias(st.session_state["categorias_disponibles"])
-            st.sidebar.success(f"¡Categoría '{cat_limpia}' creada!")
+            st.sidebar.success(f"¡Categoría '{cat_limpia}' guardada!")
             st.rerun()
         else:
-            st.sidebar.warning("Esta categoría ya existe.")
+            st.sidebar.warning("Esa categoría ya existe.")
     else:
         st.sidebar.error("Escribe un nombre válido.")
 
@@ -146,7 +148,7 @@ if uploaded_file is not None:
     if df_raw is not None and not df_raw.empty:
         st.sidebar.success(f"Archivo cargado correctamente ({len(df_raw)} movimientos)")
         
-        # --- MAPEO INTELIGENTE DE COLUMNAS ---
+        # --- MAPEO AUTOMÁTICO INTELIGENTE DE COLUMNAS ---
         st.sidebar.divider()
         st.sidebar.subheader("⚙️ Mapeo de Columnas")
         columnas = [str(col_item).strip() for col_item in df_raw.columns]
@@ -155,21 +157,23 @@ if uploaded_file is not None:
         col_fecha_default = next((i for i, col in enumerate(columnas) if 'fecha' in col.lower()), 0)
         col_concepto_default = next((i for i, col in enumerate(columnas) if 'concepto' in col.lower() or 'descrip' in col.lower()), min(1, len(columnas)-1))
         col_importe_default = next((i for i, col in enumerate(columnas) if 'importe' in col.lower() or 'monto' in col.lower()), min(2, len(columnas)-1))
-        col_saldo_default = next((i for i, col in enumerate(columnas) if 'saldo' in col.lower()), None)
+        
+        # Detección predefinida automática de la columna de Saldo
+        col_saldo_found = next((col for col in columnas if 'saldo' in col.lower()), None)
         
         col_fecha = st.sidebar.selectbox("Columna de Fecha:", columnas, index=col_fecha_default)
         col_concepto = st.sidebar.selectbox("Columna de Concepto:", columnas, index=col_concepto_default)
         col_importe = st.sidebar.selectbox("Columna de Importe (€):", columnas, index=col_importe_default)
         
         opciones_saldo = ["-- No incluir --"] + columnas
-        idx_saldo = (opciones_saldo.index(col_saldo_default) if col_saldo_default in opciones_saldo else 0)
+        idx_saldo = opciones_saldo.index(col_saldo_found) if col_saldo_found in opciones_saldo else 0
         col_saldo = st.sidebar.selectbox("Columna de Saldo:", opciones_saldo, index=idx_saldo)
         
-        # Filtro por texto
+        # Filtro de búsqueda
         st.sidebar.subheader("🔍 Filtro de Movimientos")
         search_query = st.sidebar.text_input("Buscar por palabra clave:", "")
 
-        # --- PROCESAMIENTO Y LIMPIEZA DE DATOS ---
+        # --- LIMPIEZA DE DATOS ---
         df = df_raw.copy()
         
         df['Fecha_Clean'] = pd.to_datetime(df[col_fecha], errors='coerce', dayfirst=True)
@@ -196,26 +200,30 @@ if uploaded_file is not None:
         df['Importe_Clean'] = df[col_importe].apply(limpiar_importe)
         df['Concepto_Clean'] = df[col_concepto].astype(str).str.strip()
         
-        # Categorización inteligente (Memoria personalizada + Reglas extendidas)
+        # Categorización inteligente con patrones predefinidos
         def categorizar(concepto):
             c_text = concepto.lower()
             
-            # 1. Mapeo personalizado previo guardado por el usuario
+            # 1. Reglas personalizadas previamente guardadas
             for key_concepto, cat_custom in st.session_state["custom_categories"].items():
                 if key_concepto.lower() in c_text:
                     return cat_custom
 
-            # 2. Reglas por defecto
-            if any(k in c_text for k in ['repsol', 'cepsa', 'bp', 'shell', 'gasolinera', 'combustible', 'carburante', 'norauto', 'feuvert']):
+            # 2. Asignación automática por palabras clave
+            if any(k in c_text for k in ['repsol', 'cepsa', 'bp', 'shell', 'gasolinera', 'combustible', 'carburante', 'norauto']):
                 return 'Gasolina y Vehículo'
-            elif any(k in c_text for k in ['parking', 'garaje', 'estacionamiento', 'parquimetro', 'emasa', 'saba', 'eysa', 'sare']):
+            elif any(k in c_text for k in ['parking', 'garaje', 'estacionamiento', 'parquimetro', 'emasa', 'saba', 'eysa']):
                 return 'Parking y Garaje'
-            elif any(k in c_text for k in ['carref', 'alimen', 'farma', 'super', 'mercadona', 'lidl', 'dia', 'eroski', 'bazar', 'consum', 'alcampo']):
+            elif any(k in c_text for k in ['farma', 'salud', 'clinica', 'hospital', 'medico', 'optica']):
+                return 'Salud y Farmacia'
+            elif any(k in c_text for k in ['carref', 'alimen', 'super', 'mercadona', 'lidl', 'dia', 'eroski', 'bazar', 'consum', 'alcampo']):
                 return 'Supermercados y Compras'
             elif any(k in c_text for k in ['iberdrola', 'endesa', 'naturgy', 'agua', 'agbar', 'gas', 'luz', 'vodafone', 'orange', 'movistar', 'digi']):
                 return 'Suministros y Hogar'
-            elif any(k in c_text for k in ['restaurante', 'bar', 'cafet', 'burger', 'mcdonald', 'uber eats', 'glovo', 'just eat', 'parfois', 'mago', 'amazon', 'zara', 'pago 3 plazos', 'paypal']):
+            elif any(k in c_text for k in ['restaurante', 'bar', 'cafet', 'burger', 'mcdonald', 'uber eats', 'glovo', 'just eat', 'ocio']):
                 return 'Ocio y Restauración'
+            elif any(k in c_text for k in ['zara', 'mago', 'parfois', 'amazon', 'pago 3 plazos', 'paypal', 'c&a', 'stradivarius']):
+                return 'Ropa y Tiendas'
             elif any(k in c_text for k in ['tribut', 'impuest', 'seguro', 'comunidad', 'hipoteca', 'alquiler', 'suma']):
                 return 'Impuestos y Recibos'
             elif any(k in c_text for k in ['bizum', 'transf', 'remun']):
@@ -225,7 +233,7 @@ if uploaded_file is not None:
 
         df['Categoria'] = df['Concepto_Clean'].apply(categorizar)
         
-        # --- CÁLCULO DE SALDOS ---
+        # --- CÁLCULO DE SALDOS E HISTÓRICO ---
         if col_saldo != "-- No incluir --":
             df['Saldo_Clean'] = df[col_saldo].apply(limpiar_importe)
             saldo_actual = df['Saldo_Clean'].iloc[-1]
@@ -356,26 +364,26 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # --- TABLA INTERACTIVA Y EDITABLE DE MOVIMIENTOS ---
+        # --- TABLA INTERACTIVA CON DESPLEGABLE BUSCABLE ---
         st.subheader("📋 Movimientos Procesados")
-        st.caption("✏️ Cambia la categoría de cualquier fila desde la columna desplegable. También puedes crear categorías personalizadas en la barra lateral izquierda.")
-        
-        # Aplicar filtro por palabra clave
+        st.caption("🔍 Puedes buscar dentro de la lista de categorías escribiendo directamente. Haz doble clic sobre cualquier categoría para editarla.")
+
+        # Filtrado por búsqueda
         df_filtered = df.copy()
         if search_query:
             df_filtered = df_filtered[df_filtered['Concepto_Clean'].str.contains(search_query, case=False, na=False)]
-        
+
         df_display = df_filtered.sort_values('Fecha_Clean', ascending=False)[['Fecha_Clean', 'Concepto_Clean', 'Categoria', 'Importe_Clean']].copy()
         df_display['Fecha_Clean'] = df_display['Fecha_Clean'].dt.strftime('%Y-%m-%d')
         df_display.columns = ['Fecha', 'Concepto', 'Categoría', 'Importe (€)']
 
-        # Editor interactivo de datos
+        # Configuración del editor interactivo con selector con filtro/búsqueda integrados
         edited_df = st.data_editor(
             df_display,
             column_config={
                 "Categoría": st.column_config.SelectboxColumn(
                     "Categoría",
-                    help="Selecciona o cambia la categoría de este movimiento",
+                    help="Haz clic e inicia a escribir para buscar en la lista",
                     options=st.session_state["categorias_disponibles"],
                     required=True
                 ),
@@ -389,24 +397,24 @@ if uploaded_file is not None:
             disabled=["Fecha", "Concepto", "Importe (€)"],
             hide_index=True,
             use_container_width=True,
-            key="table_editor"
+            key="tabla_interactiva"
         )
 
-        # Detectar cambios realizados por el usuario y guardarlos en memoria
+        # Detectar modificaciones y guardarlas de forma persistente
         if edited_df is not None:
-            cambios_detectados = False
+            cambios = False
             for idx in edited_df.index:
-                concepto_val = edited_df.loc[idx, 'Concepto']
-                nueva_cat = edited_df.loc[idx, 'Categoría']
+                concepto_item = edited_df.loc[idx, 'Concepto']
+                nueva_cat_item = edited_df.loc[idx, 'Categoría']
                 
-                cat_original = df_display.loc[idx, 'Categoría']
-                if nueva_cat != cat_original:
-                    st.session_state["custom_categories"][concepto_val] = nueva_cat
-                    cambios_detectados = True
+                cat_orig = df_display.loc[idx, 'Categoría']
+                if nueva_cat_item != cat_orig:
+                    st.session_state["custom_categories"][concepto_item] = nueva_cat_item
+                    cambios = True
 
-            if cambios_detectados:
+            if cambios:
                 guardar_mapeo_categorias(st.session_state["custom_categories"])
-                st.toast("✅ Categoría guardada para futuras lecturas", icon="💾")
+                st.toast("✅ Preferencia de categoría guardada de forma permanente", icon="💾")
                 st.rerun()
 
 else:
