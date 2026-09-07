@@ -22,12 +22,12 @@ def cargar_archivo(uploaded_file):
             st.error("Formato no soportado.")
             return None
 
-        # Buscar la fila donde aparecen palabras clave de banco
+        # Buscar la fila donde aparecen palabras clave de banco (convertimos todo a texto de forma segura)
         header_row = 0
         keywords = ['fecha', 'concepto', 'importe', 'movimiento', 'saldo', 'operacion']
         
         for idx, row in df_temp.iterrows():
-            row_str = " ".join(row.astype(str)).lower()
+            row_str = " ".join([str(val) for val in row if pd.notna(val)]).lower()
             if any(kw in row_str for kw in keywords):
                 header_row = idx
                 break
