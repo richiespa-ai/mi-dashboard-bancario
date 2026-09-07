@@ -6,24 +6,51 @@ st.set_page_config(page_title="Dashboard de Gestión Bancaria", layout="wide", i
 
 st.title("💳 Dashboard de Gestión Bancaria y Recibos Futuros")
 
-# --- FUNCIÓN DE LECTURA DE ARCHIVOS (CSV O EXCEL) ---
+# --- FUNCION DE LECTURA DE ARCHIVOS CON BUSQUEDA DE ENCABEZADOS ---
 def cargar_archivo(uploaded_file):
     file_name = uploaded_file.name.lower()
     try:
         if file_name.endswith('.csv'):
             try:
-                df = pd.read_csv(uploaded_file, encoding='utf-8')
+                df_temp = pd.read_csv(uploaded_file, encoding='utf-8', header=None)
             except UnicodeDecodeError:
                 uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python')
+                df_temp = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python', header=None)
         elif file_name.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(uploaded_file)
+            df_temp = pd.read_excel(uploaded_file, header=None)
         else:
-            st.error("Formato de archivo no soportado. Sube un CSV o Excel (.xlsx, .xls).")
+            st.error("Formato no soportado.")
             return None
+
+        # Buscar la fila donde aparecen palabras clave de banco
+        header_row = 0
+        keywords = ['fecha', 'concepto', 'importe', 'movimiento', 'saldo', 'operacion']
+        
+        for idx, row in df_temp.iterrows():
+            row_str = " ".join(row.astype(str)).lower()
+            if any(kw in row_str for kw in keywords):
+                header_row = idx
+                break
+        
+        # Recargar los datos asignando correctamente la cabecera encontrada
+        uploaded_file.seek(0)
+        if file_name.endswith('.csv'):
+            try:
+                df = pd.read_csv(uploaded_file, encoding='utf-8', skiprows=header_row)
+            except:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python', skiprows=header_row)
+        else:
+            df = pd.read_excel(uploaded_file, skiprows=header_row)
+            
+        # Limpiar columnas vacías de relleno (unnamed)
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
+        df = df.dropna(how='all')
+        
         return df
+        
     except Exception as e:
-        st.error(f"Error al leer el archivo: {e}")
+        st.error(f"Error al procesar el archivo: {e}")
         return None
 
 # --- SIDEBAR: CARGA DE ARCHIVO ---
@@ -31,22 +58,22 @@ st.sidebar.header("📥 Ingesta de Datos")
 uploaded_file = st.sidebar.file_uploader(
     "Sube el extracto bancario (CSV o Excel)", 
     type=["csv", "xlsx", "xls"],
-    help="Admite archivos exportados desde la banca online en formato CSV o Excel."
+    help="Admite archivos exportados desde la banca online."
 )
 
 if uploaded_file is not None:
     df_raw = cargar_archivo(uploaded_file)
     
     if df_raw is not None and not df_raw.empty:
-        st.sidebar.success(f"Archivo cargado: **{uploaded_file.name}** ({len(df_raw)} filas)")
+        st.sidebar.success(f"Archivo cargado: **{uploaded_file.name}** ({len(df_raw)} movimientos)")
         
-        # --- MAPEO AUTOMÁTICO / MANUAL DE COLUMNAS ---
+        # --- MAPEO INTELIGENTE DE COLUMNAS ---
         st.sidebar.subheader("⚙️ Mapeo de Columnas")
         columnas = list(df_raw.columns)
         
         col_fecha_default = next((i for i, c in enumerate(columnas) if any(k in str(c).lower() for k in ['fecha', 'date', 'f.oper'])), 0)
         col_concepto_default = next((i for i, c in enumerate(columnas) if any(k in str(c).lower() for k in ['concepto', 'descrip', 'detalle', 'movimiento'])), min(1, len(columnas)-1))
-        col_importe_default = next((i for i, c in enumerate(columnas) if any(k in str(c).lower() for k in ['importe', 'cantidad', 'monto', 'amount'])), min(2, len(columnas)-1))
+        col_importe_default = next((i for i, c in enumerate(columnas) if any(k in str(c).lower() for k in ['importe', 'cantidad', 'monto'])), min(2, len(columnas)-1))
         col_saldo_default = next((i for i, c in enumerate(columnas) if any(k in str(c).lower() for k in ['saldo', 'balance'])), None)
         
         col_fecha = st.sidebar.selectbox("Columna de Fecha:", columnas, index=col_fecha_default)
@@ -54,7 +81,7 @@ if uploaded_file is not None:
         col_importe = st.sidebar.selectbox("Columna de Importe (€):", columnas, index=col_importe_default)
         
         opciones_saldo = ["-- No incluir --"] + columnas
-        idx_saldo = (opciones_saldo.index(col_saldo_default) if col_saldo_default else 0)
+        idx_saldo = (opciones_saldo.index(col_saldo_default) if col_saldo_default in opciones_saldo else 0)
         col_saldo = st.sidebar.selectbox("Columna de Saldo (Opcional):", opciones_saldo, index=idx_saldo)
         
         # --- PROCESAMIENTO DE DATOS ---
@@ -84,11 +111,11 @@ if uploaded_file is not None:
         df['Importe_Clean'] = df[col_importe].apply(limpiar_importe)
         df['Concepto_Clean'] = df[col_concepto].astype(str).str.strip()
         
-        # --- MOTOR DE PREDICCIÓN DE RECIBOS RECURRENTES ---
+        # --- MOTOR DE PREDICCIÓN DE RECIBOS ---
         conceptos_clave = [
             'luz', 'endesa', 'iberdrola', 'naturgy', 'agbar', 'agua', 'gas',
             'alquiler', 'hipoteca', 'comunidad', 'netflix', 'spotify', 'gimnasio',
-            'amazon', 'seguro', 'vodafone', 'movistar', 'orange'
+            'amazon', 'seguro', 'vodafone', 'movistar', 'orange', 'paypal', 'carref'
         ]
         
         gastos_futuros = []
@@ -111,7 +138,7 @@ if uploaded_file is not None:
 
         df_futuros = pd.DataFrame(gastos_futuros)
         
-        # --- CÁLCULO DE METRICAS ---
+        # --- CÁLCULO DE MÉTRICAS ---
         if col_saldo != "-- No incluir --":
             df['Saldo_Clean'] = df[col_saldo].apply(limpiar_importe)
             saldo_actual = df['Saldo_Clean'].iloc[0]
@@ -121,7 +148,7 @@ if uploaded_file is not None:
         compromisos = df_futuros['Importe Estimado (€)'].sum() if not df_futuros.empty else 0.0
         saldo_disponible = saldo_actual - compromisos
         
-        # --- VISUALIZACIÓN ---
+        # --- DASHBOARD ---
         col1, col2, col3 = st.columns(3)
         col1.metric("Saldo Real Actual", f"{saldo_actual:,.2f} €")
         col2.metric("Recibos Pendientes Estimados", f"-{compromisos:,.2f} €")
