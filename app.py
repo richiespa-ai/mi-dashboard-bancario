@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
-from datetime import datetime
+from datetime import datetime, date
 
 st.set_page_config(
     page_title="Dashboard Bancario",
@@ -96,9 +96,25 @@ def procesar_extracto_bancario(uploaded_file):
         
     return pd.DataFrame(registros)
 
-# --- GESTIÓN DE ESTADO ---
+# --- GESTIÓN DE ESTADO Y SINCRONIZACIÓN INICIAL DESDE GOOGLE SHEETS ---
 if "df_movimientos" not in st.session_state:
     st.session_state.df_movimientos = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
+    
+    # Intentar recuperar los datos ya guardados en Google Sheets al iniciar la app
+    if APPS_SCRIPT_URL != "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" and APPS_SCRIPT_URL.startswith("https://"):
+        try:
+            # Si tu Apps Script soporta una petición GET para leer, o podemos hacer una llamada
+            response = requests.get(APPS_SCRIPT_URL)
+            if response.status_code == 200:
+                data_json = response.json()
+                if data_json and isinstance(data_json, list):
+                    df_sheet = pd.DataFrame(data_json)
+                    # Asegurar las columnas correctas
+                    if {"Fecha", "Concepto", "Categoría", "Importe"}.issubset(df_sheet.columns):
+                        st.session_state.df_movimientos = df_sheet
+        except:
+            # Si el script no tiene implementado el GET todavía, arranca vacío sin romper nada
+            pass
 
 # --- SIDEBAR: CARGA DE EXCEL ---
 st.sidebar.header("📁 Importar Extracto")
@@ -121,7 +137,7 @@ if uploaded_file is not None:
                         df_nuevo["clave_unitaria"] = df_nuevo["Fecha"].astype(str) + "_" + df_nuevo["Concepto"].astype(str) + "_" + df_nuevo["Importe"].astype(str)
                         
                         df_a_incorporar = df_nuevo[~df_nuevo["clave_unitaria"].isin(df_actual["clave_unitaria"])].drop(columns=["clave_unitaria"])
-                        df_actual = df_actual.drop(columns=["clave_unitaria"])
+                        df_actual = df_actual.drop(columns=["clave_unitaria"], errors="ignore")
                     
                     if not df_a_incorporar.empty:
                         nuevos_datos_lista = df_a_incorporar.values.tolist()
@@ -149,7 +165,7 @@ if not df.empty:
 else:
     df["Fecha_dt"] = pd.Series(dtype="datetime64[ns]")
 
-# --- SIDEBAR: FILTROS TEMPORALES Y DE CATEGORÍA ---
+# --- SIDEBAR: FILTROS AVANZADOS ---
 st.sidebar.header("🔍 Filtros Avanzados")
 
 # 1. Filtro de Categoría
@@ -167,41 +183,30 @@ if not df_filtered.empty:
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
     
     # Aplicar filtros temporales
-    hoy = pd.Timestamp.today().date()
+    hoy = pd.Timestamp.today()
     
     if modo_tiempo == "Mes actual":
-        df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == pd.Timestamp.today().year) & (df_filtered["Fecha_dt"].dt.month == pd.Timestamp.today().month)]
+        df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == hoy.year) & (df_filtered["Fecha_dt"].dt.month == hoy.month)]
     elif modo_tiempo == "Mes anterior":
-        mes_actual = pd.Timestamp.today().month
-        anio_actual = pd.Timestamp.today().year
-        mes_ant = mes_actual - 1 if mes_actual > 1 else 12
-        anio_ant = anio_actual if mes_actual > 1 else anio_actual - 1
+        mes_ant = hoy.month - 1 if hoy.month > 1 else 12
+        anio_ant = hoy.year if hoy.month > 1 else hoy.year - 1
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == anio_ant) & (df_filtered["Fecha_dt"].dt.month == mes_ant)]
     elif modo_tiempo == "Rango personalizado":
-        # Asegurar fechas mínimas y máximas válidas pasadas a .date()
-        valid_dates = df_filtered["Fecha_dt"].dropna()
-        if not valid_dates.empty:
-            min_date = valid_dates.min().date()
-            max_date = valid_dates.max().date()
-        else:
-            min_date = hoy
-            max_date = hoy
-            
+        # Calendario seguro y directo de Streamlit
+        default_start = date(hoy.year, 1, 1)
+        default_end = hoy.date()
+        
         rango_fechas = st.sidebar.date_input(
             "Selecciona rango de fechas",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date
+            value=(default_start, default_end)
         )
         
         if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
             inicio, fin = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
             df_filtered = df_filtered[(df_filtered["Fecha_dt"] >= inicio) & (df_filtered["Fecha_dt"] <= fin)]
-        elif isinstance(rango_fechas, tuple) and len(rango_fechas) == 1:
-            inicio = pd.to_datetime(rango_fechas[0])
-            df_filtered = df_filtered[df_filtered["Fecha_dt"] >= inicio]
 
     df_filtered["Importe"] = pd.to_numeric(df_filtered["Importe"], errors="coerce").fillna(0.0)
+
 # --- DASHBOARD DE KPIS ---
 ingresos = df_filtered[df_filtered["Importe"] > 0]["Importe"].sum() if not df_filtered.empty else 0.0
 gastos = df_filtered[df_filtered["Importe"] < 0]["Importe"].sum() if not df_filtered.empty else 0.0
@@ -215,10 +220,9 @@ col4.metric("Nº Transacciones", len(df_filtered))
 
 st.markdown("---")
 
-# --- SECCIÓN ADICIONAL: PRÓXIMOS RECIBOS O GASTOS RECIENTES DEL MES ---
+# --- SECCIÓN: ÚLTIMOS MOVIMIENTOS ---
 if not df.empty:
     st.subheader("📅 Últimos Movimientos / Recibos del Mes")
-    # Mostrar los gastos más recientes o del mes actual para ver los recibos que van entrando
     df_recientes = df.sort_values(by="Fecha_dt", ascending=False).head(5)
     cols_mostrar_recientes = df_recientes[["Fecha", "Concepto", "Categoría", "Importe"]].copy()
     cols_mostrar_recientes["Importe"] = cols_mostrar_recientes["Importe"].apply(lambda x: f"{x:,.2f} €")
