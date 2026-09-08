@@ -76,6 +76,64 @@ def categorizar_concepto(concepto, df_cat):
             return cat_principal
     return "Sin Categorizar"
 
+def procesar_extracto_bancario(uploaded_file):
+    """Lee el excel sin cabecera fija, detecta dónde empiezan los datos y extrae por posición (A, C, D)."""
+    if uploaded_file.name.endswith(".csv"):
+        df_raw = pd.read_csv(uploaded_file, header=None)
+    else:
+        df_raw = pd.read_excel(uploaded_file, header=None)
+    
+    fila_inicio = 0
+    # Buscar dinámicamente la fila de cabecera o datos buscando la palabra 'Fecha' o 'Operación'
+    for idx, row in df_raw.iterrows():
+        fila_str = " ".join([str(val).lower() for val in row.values if pd.notna(val)])
+        if "fecha" in fila_str or "operacion" in fila_str or "concepto" in fila_str:
+            fila_inicio = idx + 1  # Los datos empiezan justo debajo de la cabecera
+            break
+            
+    # Si no encuentra cabecera clara, asumimos que los datos empiezan en la primera fila con valores válidos
+    if fila_inicio >= len(df_raw):
+        fila_inicio = 0
+
+    df_datos = df_raw.iloc[fila_inicio:].copy()
+    
+    filas_procesadas = []
+    for _, row in df_datos.iterrows():
+        vals = row.values
+        # Asegurarnos de que la fila tiene suficientes columnas (A=0, C=2, D=3)
+        if len(vals) < 4:
+            continue
+            
+        fecha_val = vals[0]     # Columna A: Fecha de Operación
+        concepto_val = vals[2]  # Columna C: Concepto
+        importe_val = vals[3]   # Columna D: Importe
+        
+        # Validar que al menos la fecha o el importe tengan sentido para descartar filas vacías o de resumen
+        if pd.isna(fecha_val) or pd.isna(importe_val):
+            continue
+            
+        importe_float = limpiar_importe(importe_val)
+        if importe_float == 0.0 and (pd.isna(concepto_val) or str(concepto_val).strip() == ""):
+            continue
+            
+        importe_float = round(importe_float, 2)
+        
+        fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
+        if pd.isna(fecha_dt):
+            continue # Si no es una fecha válida, descartamos la fila (evita cabeceras repetidas)
+            
+        fecha_str = str(fecha_dt.date())
+        cat_val = categorizar_concepto(concepto_val, df_cat)
+        
+        filas_procesadas.append([
+            fecha_str,
+            str(concepto_val).strip(),
+            cat_val,
+            importe_float
+        ])
+        
+    return filas_procesadas
+
 # --- SIDEBAR: CARGA DE EXCEL ---
 st.sidebar.header("📁 Importar Extracto")
 uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
@@ -86,49 +144,18 @@ if uploaded_file is not None:
             st.sidebar.error("❌ Configura tu URL de Google Apps Script en el código.")
         else:
             try:
-                if uploaded_file.name.endswith(".csv"):
-                    df_excel = pd.read_csv(uploaded_file)
-                else:
-                    df_excel = pd.read_excel(uploaded_file)
-                
-                df_excel.columns = [str(c).strip() for c in df_excel.columns]
-                nuevas_filas = []
-                
-                for idx, row in df_excel.iterrows():
-                    fila_vals = row.values
-                    
-                    fecha_val = row.get("Fecha") or row.get("Fecha Valor") or (fila_vals[0] if len(fila_vals) > 0 else None)
-                    concepto_val = row.get("Concepto") or row.get("Descripción") or (fila_vals[1] if len(fila_vals) > 1 else "Sin concepto")
-                    cat_val = row.get("Categoría") if "Categoría" in df_excel.columns else None
-                    importe_val = row.get("Importe") or row.get("Monto") or (fila_vals[2] if len(fila_vals) > 2 else 0.0)
-                    
-                    importe_float = limpiar_importe(importe_val)
-                    importe_float = round(importe_float, 2)
-                    
-                    fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
-                    fecha_str = str(fecha_dt.date()) if pd.notnull(fecha_dt) else str(pd.Timestamp.now().date())
-                    
-                    if not cat_val or pd.isna(cat_val):
-                        cat_val = categorizar_concepto(concepto_val, df_cat)
-                    
-                    fila_tabla = [
-                        fecha_str,
-                        str(concepto_val) if pd.notnull(concepto_val) else "Sin concepto",
-                        str(cat_val),
-                        importe_float
-                    ]
-                    nuevas_filas.append(fila_tabla)
+                nuevas_filas = procesar_extracto_bancario(uploaded_file)
                 
                 if nuevas_filas:
                     response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevas_filas})
                     if response.status_code == 200:
-                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados!")
+                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados correctamente!")
                         st.cache_data.clear()
                         st.rerun()
                     else:
                         st.sidebar.error(f"Error en Apps Script: {response.text}")
                 else:
-                    st.sidebar.warning("No hay filas válidas.")
+                    st.sidebar.warning("No se han encontrado filas de movimientos válidas en el archivo.")
             except Exception as err:
                 st.sidebar.error(f"Error procesando el fichero: {err}")
 
