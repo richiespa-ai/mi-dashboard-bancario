@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
+from datetime import datetime
 
 st.set_page_config(
     page_title="Dashboard Bancario",
@@ -12,7 +13,7 @@ st.set_page_config(
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
 # URL de tu Google Apps Script
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec"
+APPS_SCRIPT_URL = "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI"
 
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
@@ -39,18 +40,13 @@ def categorizar_concepto(concepto):
         return "Transporte"
     elif any(w in c for w in ["restaurante", "bar", "cafe", "mcdonalds", "glovo", "uber eats"]):
         return "Ocio y Restaurantes"
-    elif any(w in c for w in ["luz", "agua", "gas", "iberdrola", "endesa", "alquiler", "comunidad"]):
+    elif any(w in c for w in ["luz", "agua", "gas", "iberdrola", "endesa", "alquiler", "comunidad", "netflix", "spotify"]):
         return "Vivienda y Suministros"
     elif any(w in c for w in ["nomina", "sueldo", "transferencia", "ingreso"]):
         return "Ingresos"
     return "Otros"
 
 def procesar_extracto_bancario(uploaded_file):
-    """Lee el excel o csv localmente, busca la cabecera y extrae:
-       - Columna A: Fecha
-       - Columna C: Concepto
-       - Columna D: Importe
-    """
     if uploaded_file.name.endswith(".csv"):
         df_raw = pd.read_csv(uploaded_file, header=None)
     else:
@@ -71,9 +67,9 @@ def procesar_extracto_bancario(uploaded_file):
         if len(vals) < 4:
             continue
             
-        fecha_val = vals[0]     # Columna A
-        concepto_val = vals[2]  # Columna C
-        importe_val = vals[3]   # Columna D
+        fecha_val = vals[0]     # Columna A: Fecha
+        concepto_val = vals[2]  # Columna C: Concepto
+        importe_val = vals[3]   # Columna D: Importe
         
         if pd.isna(fecha_val) or pd.isna(importe_val):
             continue
@@ -121,27 +117,23 @@ if uploaded_file is not None:
                     if df_actual.empty:
                         df_a_incorporar = df_nuevo
                     else:
-                        # Crear una clave única temporal (Fecha + Concepto + Importe) para filtrar duplicados exactos
                         df_actual["clave_unitaria"] = df_actual["Fecha"].astype(str) + "_" + df_actual["Concepto"].astype(str) + "_" + df_actual["Importe"].astype(str)
                         df_nuevo["clave_unitaria"] = df_nuevo["Fecha"].astype(str) + "_" + df_nuevo["Concepto"].astype(str) + "_" + df_nuevo["Importe"].astype(str)
                         
-                        # Filtrar solo los registros que NO existan previamente en la herramienta
                         df_a_incorporar = df_nuevo[~df_nuevo["clave_unitaria"].isin(df_actual["clave_unitaria"])].drop(columns=["clave_unitaria"])
                         df_actual = df_actual.drop(columns=["clave_unitaria"])
                     
                     if not df_a_incorporar.empty:
-                        # 1. Enviar ÚNICAMENTE las nuevas filas a Google Sheets mediante Apps Script
                         nuevos_datos_lista = df_a_incorporar.values.tolist()
                         response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevos_datos_lista})
                         
                         if response.status_code == 200:
-                            # 2. Actualizar la memoria local (Session State) sumando solo lo nuevo
                             st.session_state.df_movimientos = pd.concat([df_actual, df_a_incorporar], ignore_index=True)
-                            st.sidebar.success(f"¡Se han añadido y sincronizado {len(df_a_incorporar)} movimientos nuevos! (Se ignoraron duplicados)")
+                            st.sidebar.success(f"¡Se añadieron {len(df_a_incorporar)} movimientos nuevos!")
                         else:
                             st.sidebar.error(f"Error al sincronizar con Google Sheets: {response.text}")
                     else:
-                        st.sidebar.warning("⚠️ Todos los movimientos de este archivo ya estaban registrados anteriormente.")
+                        st.sidebar.warning("⚠️ Todos los movimientos de este archivo ya estaban registrados.")
                 else:
                     st.sidebar.warning("No se encontraron movimientos válidos en las columnas A, C y D.")
             except Exception as err:
@@ -151,15 +143,45 @@ st.sidebar.markdown("---")
 
 df = st.session_state.df_movimientos
 
-# --- SIDEBAR: FILTROS ---
-st.sidebar.header("🔍 Filtros")
+# Asegurar formato de fecha en el DataFrame maestro
+if not df.empty:
+    df["Fecha_dt"] = pd.to_datetime(df["Fecha"], errors="coerce")
+else:
+    df["Fecha_dt"] = pd.Series(dtype="datetime64[ns]")
+
+# --- SIDEBAR: FILTROS TEMPORALES Y DE CATEGORÍA ---
+st.sidebar.header("🔍 Filtros Avanzados")
+
+# 1. Filtro de Categoría
 categorias = ["Todas"] + sorted(list(df["Categoría"].dropna().unique())) if not df.empty else ["Todas"]
 cat_sel = st.sidebar.selectbox("Categoría", categorias)
 
+# 2. Filtro de Tiempo
+modo_tiempo = st.sidebar.radio("Periodo de tiempo", ["Todo el histórico", "Mes actual", "Mes anterior", "Rango personalizado"])
+
 df_filtered = df.copy()
+
 if not df_filtered.empty:
+    # Aplicar filtro de categoría
     if cat_sel != "Todas":
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
+    
+    # Aplicar filtros temporales
+    hoy = pd.Timestamp.today()
+    if modo_tiempo == "Mes actual":
+        df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == hoy.year) & (df_filtered["Fecha_dt"].dt.month == hoy.month)]
+    elif modo_tiempo == "Mes anterior":
+        mes_ant = hoy.month - 1 if hoy.month > 1 else 12
+        anio_ant = hoy.year if hoy.month > 1 else hoy.year - 1
+        df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == anio_ant) & (df_filtered["Fecha_dt"].dt.month == mes_ant)]
+    elif modo_tiempo == "Rango personalizado":
+        min_date = df_filtered["Fecha_dt"].min().date() if pd.notnull(df_filtered["Fecha_dt"].min()) else hoy.date()
+        max_date = df_filtered["Fecha_dt"].max().date() if pd.notnull(df_filtered["Fecha_dt"].max()) else hoy.date()
+        rango_fechas = st.sidebar.date_input("Selecciona fechas", [min_date, max_date])
+        if len(rango_fechas) == 2:
+            inicio, fin = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
+            df_filtered = df_filtered[(df_filtered["Fecha_dt"] >= inicio) & (df_filtered["Fecha_dt"] <= fin)]
+
     df_filtered["Importe"] = pd.to_numeric(df_filtered["Importe"], errors="coerce").fillna(0.0)
 
 # --- DASHBOARD DE KPIS ---
@@ -175,6 +197,17 @@ col4.metric("Nº Transacciones", len(df_filtered))
 
 st.markdown("---")
 
+# --- SECCIÓN ADICIONAL: PRÓXIMOS RECIBOS O GASTOS RECIENTES DEL MES ---
+if not df.empty:
+    st.subheader("📅 Últimos Movimientos / Recibos del Mes")
+    # Mostrar los gastos más recientes o del mes actual para ver los recibos que van entrando
+    df_recientes = df.sort_values(by="Fecha_dt", ascending=False).head(5)
+    cols_mostrar_recientes = df_recientes[["Fecha", "Concepto", "Categoría", "Importe"]].copy()
+    cols_mostrar_recientes["Importe"] = cols_mostrar_recientes["Importe"].apply(lambda x: f"{x:,.2f} €")
+    st.dataframe(cols_mostrar_recientes, use_container_width=True, hide_index=True)
+
+st.markdown("---")
+
 # --- GRÁFICOS ---
 col_chart1, col_chart2 = st.columns(2)
 
@@ -187,16 +220,14 @@ with col_chart1:
             fig_cat = px.pie(df_gastos, values="Importe_Abs", names="Categoría", hole=0.4)
             st.plotly_chart(fig_cat, use_container_width=True)
         else:
-            st.info("No hay gastos registrados en la selección.")
+            st.info("No hay gastos registrados en este filtro.")
     else:
         st.info("Sube un archivo Excel para ver los gráficos.")
 
 with col_chart2:
-    st.subheader("📈 Flujo de Caja")
+    st.subheader("📈 Flujo de Caja por Fecha")
     if not df_filtered.empty:
-        df_trend = df_filtered.copy()
-        df_trend["Fecha"] = pd.to_datetime(df_trend["Fecha"], errors="coerce")
-        df_trend = df_trend.dropna(subset=["Fecha"]).sort_values("Fecha")
+        df_trend = df_filtered.dropna(subset=["Fecha_dt"]).sort_values("Fecha_dt")
         if not df_trend.empty:
             df_trend["Tipo"] = df_trend["Importe"].apply(lambda x: "Ingreso" if x >= 0 else "Gasto")
             fig_line = px.bar(
@@ -208,19 +239,20 @@ with col_chart2:
             )
             st.plotly_chart(fig_line, use_container_width=True)
         else:
-            st.info("No hay fechas válidas.")
+            st.info("No hay fechas válidas en este filtro.")
     else:
         st.info("Sube un archivo Excel para ver el flujo de caja.")
 
 st.markdown("---")
 
-# --- TABLA DE DATOS FORMATEADA ---
-st.subheader("📋 Registro de Movimientos")
+# --- TABLA DE DATOS FILTRADOS ---
+st.subheader("📋 Registro Completo (Filtrado)")
 if not df_filtered.empty:
+    df_mostrar = df_filtered[["Fecha", "Concepto", "Categoría", "Importe"]].copy()
     st.dataframe(
-        df_filtered.style.format({"Importe": "{:,.2f} €"}),
+        df_mostrar.style.format({"Importe": "{:,.2f} €"}),
         use_container_width=True,
         hide_index=True
     )
 else:
-    st.warning("No hay movimientos cargados actualmente. Utiliza el panel lateral para subir tu extracto.")
+    st.warning("No hay movimientos para los filtros seleccionados.")
