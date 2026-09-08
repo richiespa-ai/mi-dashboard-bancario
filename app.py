@@ -167,23 +167,41 @@ if not df_filtered.empty:
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
     
     # Aplicar filtros temporales
-    hoy = pd.Timestamp.today()
+    hoy = pd.Timestamp.today().date()
+    
     if modo_tiempo == "Mes actual":
-        df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == hoy.year) & (df_filtered["Fecha_dt"].dt.month == hoy.month)]
+        df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == pd.Timestamp.today().year) & (df_filtered["Fecha_dt"].dt.month == pd.Timestamp.today().month)]
     elif modo_tiempo == "Mes anterior":
-        mes_ant = hoy.month - 1 if hoy.month > 1 else 12
-        anio_ant = hoy.year if hoy.month > 1 else hoy.year - 1
+        mes_actual = pd.Timestamp.today().month
+        anio_actual = pd.Timestamp.today().year
+        mes_ant = mes_actual - 1 if mes_actual > 1 else 12
+        anio_ant = anio_actual if mes_actual > 1 else anio_actual - 1
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == anio_ant) & (df_filtered["Fecha_dt"].dt.month == mes_ant)]
     elif modo_tiempo == "Rango personalizado":
-        min_date = df_filtered["Fecha_dt"].min().date() if pd.notnull(df_filtered["Fecha_dt"].min()) else hoy.date()
-        max_date = df_filtered["Fecha_dt"].max().date() if pd.notnull(df_filtered["Fecha_dt"].max()) else hoy.date()
-        rango_fechas = st.sidebar.date_input("Selecciona fechas", [min_date, max_date])
-        if len(rango_fechas) == 2:
+        # Asegurar fechas mínimas y máximas válidas pasadas a .date()
+        valid_dates = df_filtered["Fecha_dt"].dropna()
+        if not valid_dates.empty:
+            min_date = valid_dates.min().date()
+            max_date = valid_dates.max().date()
+        else:
+            min_date = hoy
+            max_date = hoy
+            
+        rango_fechas = st.sidebar.date_input(
+            "Selecciona rango de fechas",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
+        
+        if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
             inicio, fin = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
             df_filtered = df_filtered[(df_filtered["Fecha_dt"] >= inicio) & (df_filtered["Fecha_dt"] <= fin)]
+        elif isinstance(rango_fechas, tuple) and len(rango_fechas) == 1:
+            inicio = pd.to_datetime(rango_fechas[0])
+            df_filtered = df_filtered[df_filtered["Fecha_dt"] >= inicio]
 
     df_filtered["Importe"] = pd.to_numeric(df_filtered["Importe"], errors="coerce").fillna(0.0)
-
 # --- DASHBOARD DE KPIS ---
 ingresos = df_filtered[df_filtered["Importe"] > 0]["Importe"].sum() if not df_filtered.empty else 0.0
 gastos = df_filtered[df_filtered["Importe"] < 0]["Importe"].sum() if not df_filtered.empty else 0.0
