@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
-# URL de tu Google Apps Script actual
+# URL de tu Google Apps Script (para enviar los nuevos)
 APPS_SCRIPT_URL = "https://script.google.com/macros/library/d/1Inca7JqdR4v1X5yCQCF6CuAFumpyo-stOpH8T8BCq5YYYVWVwoscVs_O/2"
 
 def limpiar_importe(val):
@@ -96,74 +96,46 @@ def procesar_extracto_bancario(uploaded_file):
         
     return pd.DataFrame(registros)
 
-# --- GESTIÓN DE ESTADO ---
+# --- GESTIÓN DE ESTADO (SESSION STATE) ---
 if "df_movimientos" not in st.session_state:
     st.session_state.df_movimientos = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
 
-# --- SIDEBAR: RECUPERAR DATOS DE GOOGLE SHEETS ---
-st.sidebar.header("🔄 Sincronización")
-if st.sidebar.button("Cargar datos guardados de Google Sheets"):
-    if APPS_SCRIPT_URL == "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" or not APPS_SCRIPT_URL.startswith("https://"):
-        st.sidebar.error("❌ Configura tu URL de Google Apps Script.")
-    else:
-        try:
-            response = requests.get(APPS_SCRIPT_URL)
-            if response.status_code == 200:
-                data_json = response.json()
-                if data_json and isinstance(data_json, list) and len(data_json) > 0:
-                    df_sheet = pd.DataFrame(data_json)
-                    if {"Fecha", "Concepto", "Categoría", "Importe"}.issubset(df_sheet.columns):
-                        st.session_state.df_movimientos = df_sheet
-                        st.sidebar.success(f"¡Se han recuperado {len(df_sheet)} registros del Sheet!")
-                    else:
-                        st.sidebar.warning("Los datos del Sheet no tienen el formato esperado.")
-                else:
-                    st.sidebar.info("El Google Sheet está actualmente vacío.")
-            else:
-                st.sidebar.error("Error al conectar con Google Sheets.")
-        except Exception as e:
-            st.sidebar.error(f"Error de conexión: {e}")
-
-st.sidebar.markdown("---")
-
 # --- SIDEBAR: CARGA DE EXCEL ---
-st.sidebar.header("📁 Importar Extracto Nuevo")
+st.sidebar.header("📁 Importar Extracto")
 uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
 
 if uploaded_file is not None:
-    if st.sidebar.button("Cargar y Sincronizar Nuevos Movimientos"):
-        if APPS_SCRIPT_URL == "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" or not APPS_SCRIPT_URL.startswith("https://"):
-            st.sidebar.error("❌ Configura primero tu URL de Google Apps Script.")
-        else:
-            try:
-                df_nuevo = procesar_extracto_bancario(uploaded_file)
-                if not df_nuevo.empty:
-                    df_actual = st.session_state.df_movimientos
-                    
-                    if df_actual.empty:
-                        df_a_incorporar = df_nuevo
-                    else:
-                        df_actual["clave_unitaria"] = df_actual["Fecha"].astype(str) + "_" + df_actual["Concepto"].astype(str) + "_" + df_actual["Importe"].astype(str)
-                        df_nuevo["clave_unitaria"] = df_nuevo["Fecha"].astype(str) + "_" + df_nuevo["Concepto"].astype(str) + "_" + df_nuevo["Importe"].astype(str)
-                        
-                        df_a_incorporar = df_nuevo[~df_nuevo["clave_unitaria"].isin(df_actual["clave_unitaria"])].drop(columns=["clave_unitaria"])
-                        df_actual = df_actual.drop(columns=["clave_unitaria"], errors="ignore")
-                    
-                    if not df_a_incorporar.empty:
-                        nuevos_datos_lista = df_a_incorporar.values.tolist()
-                        response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevos_datos_lista})
-                        
-                        if response.status_code == 200:
-                            st.session_state.df_movimientos = pd.concat([df_actual, df_a_incorporar], ignore_index=True)
-                            st.sidebar.success(f"¡Se añadieron y sincronizaron {len(df_a_incorporar)} movimientos nuevos!")
-                        else:
-                            st.sidebar.error(f"Error al sincronizar con Google Sheets: {response.text}")
-                    else:
-                        st.sidebar.warning("⚠️ Todos los movimientos de este archivo ya estaban registrados.")
+    if st.sidebar.button("Cargar y Sincronizar Movimientos"):
+        try:
+            df_nuevo = procesar_extracto_bancario(uploaded_file)
+            if not df_nuevo.empty:
+                df_actual = st.session_state.df_movimientos
+                
+                if df_actual.empty:
+                    df_a_incorporar = df_nuevo
                 else:
-                    st.sidebar.warning("No se encontraron movimientos válidos en las columnas A, C y D.")
-            except Exception as err:
-                st.sidebar.error(f"Error procesando el archivo: {err}")
+                    df_actual["clave_unitaria"] = df_actual["Fecha"].astype(str) + "_" + df_actual["Concepto"].astype(str) + "_" + df_actual["Importe"].astype(str)
+                    df_nuevo["clave_unitaria"] = df_nuevo["Fecha"].astype(str) + "_" + df_nuevo["Concepto"].astype(str) + "_" + df_nuevo["Importe"].astype(str)
+                    
+                    df_a_incorporar = df_nuevo[~df_nuevo["clave_unitaria"].isin(df_actual["clave_unitaria"])].drop(columns=["clave_unitaria"])
+                    df_actual = df_actual.drop(columns=["clave_unitaria"], errors="ignore")
+                
+                if not df_a_incorporar.empty:
+                    # Intentar volcar al Sheet si está configurado (sin romper la app si falla)
+                    if APPS_SCRIPT_URL != "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" and APPS_SCRIPT_URL.startswith("https://"):
+                        try:
+                            requests.post(APPS_SCRIPT_URL, json={"rows": df_a_incorporar.values.tolist()})
+                        except:
+                            pass
+                    
+                    st.session_state.df_movimientos = pd.concat([df_actual, df_a_incorporar], ignore_index=True)
+                    st.sidebar.success(f"¡Se han añadido {len(df_a_incorporar)} movimientos nuevos correctamente!")
+                else:
+                    st.sidebar.warning("⚠️ Todos los movimientos de este archivo ya estaban registrados.")
+            else:
+                st.sidebar.warning("No se encontraron movimientos válidos en las columnas A, C y D.")
+        except Exception as err:
+            st.sidebar.error(f"Error procesando el archivo: {err}")
 
 st.sidebar.markdown("---")
 
@@ -178,8 +150,9 @@ else:
 # --- SIDEBAR: FILTROS AVANZADOS ---
 st.sidebar.header("🔍 Filtros Avanzados")
 
-# 1. Filtro de Categoría
-categorias = ["Todas"] + sorted(list(df["Categoría"].dropna().unique())) if not df.empty else ["Todas"]
+# 1. Filtro de Categoría (Dinámico basado en los datos cargados)
+lista_categorias = sorted(list(df["Categoría"].dropna().unique())) if not df.empty else []
+categorias = ["Todas"] + lista_categorias
 cat_sel = st.sidebar.selectbox("Categoría", categorias)
 
 # 2. Filtro de Tiempo
@@ -284,4 +257,4 @@ if not df_filtered.empty:
         hide_index=True
     )
 else:
-    st.warning("No hay movimientos para los filtros seleccionados.")
+    st.warning("No hay movimientos cargados o para los filtros seleccionados. Sube tu extracto bancario en el menú lateral.")
