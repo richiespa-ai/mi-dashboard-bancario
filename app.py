@@ -13,7 +13,7 @@ st.set_page_config(
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
 # --- URL DE GOOGLE APPS SCRIPT ---
-APPS_SCRIPT_URL = "https://script.google.com/macros/library/d/1Inca7JqdR4v1X5yCQCF6CuAFumpyo-stOpH8T8BCq5YYYVWVwoscVs_O/2"
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx0W8sahQ29p0NTm9mxvIXWGvtLAdZsREWM__2nHXu2-Xgd9v3LRHUHT3OK8poHn84GRA/exec"
 
 # --- FUNCIONES DE UTILIDAD ---
 def limpiar_importe(val):
