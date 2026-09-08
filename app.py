@@ -13,7 +13,7 @@ st.set_page_config(
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1tfnhAs8VeaciHXWJ4J0UDxkhvOiuR-_FvDRnHD0tqxI/edit"
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec"
+APPS_SCRIPT_URL = "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI"
 
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
@@ -52,7 +52,6 @@ def load_all_data():
             if col not in df_mov.columns:
                 df_mov[col] = None
         
-        # Conversión estricta y forzada a float para que funcionen KPIs y formato
         df_mov['Importe'] = df_mov['Importe'].apply(limpiar_importe)
         df_mov['Importe'] = pd.to_numeric(df_mov['Importe'], errors='coerce').fillna(0.0)
         df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
@@ -88,20 +87,42 @@ if uploaded_file is not None:
             st.sidebar.error("❌ Configura tu URL de Google Apps Script en el código.")
         else:
             try:
+                # Leer el archivo excel/csv asegurando que coja bien las columnas
                 if uploaded_file.name.endswith(".csv"):
                     df_excel = pd.read_csv(uploaded_file)
                 else:
                     df_excel = pd.read_excel(uploaded_file)
                 
-                df_excel.columns = [str(c).strip() for c in df_excel.columns]
                 nuevas_filas = []
                 start_id = len(df) + 1
                 
                 for idx, row in df_excel.iterrows():
-                    fecha_val = row.get("Fecha") or row.get("Fecha Valor") or row.get("F.Operación") or row.get("FECHA")
-                    concepto_val = row.get("Concepto") or row.get("Descripción") or row.get("CONCEPTO") or "Movimiento Importado"
-                    importe_val = row.get("Importe") or row.get("Monto") or row.get("IMPORTE") or 0.0
+                    # Si el excel tiene nombres de columnas específicos, los intentamos buscar; 
+                    # si no, cogemos las columnas por su posición (índices 0, 1, 2...) adaptado a extractos bancarios comunes
+                    fila_vals = row.values
                     
+                    # Intentamos extraer fecha, concepto e importe de forma inteligente por posición o nombres
+                    fecha_val = None
+                    concepto_val = None
+                    importe_val = None
+                    
+                    # Buscar por nombre de columna si existen
+                    for col_name in df_excel.columns:
+                        c_lower = str(col_name).lower()
+                        if any(k in c_lower for k in ["fecha", "f.oper", "f_oper"]):
+                            fecha_val = row.get(col_name)
+                        elif any(k in c_lower for k in ["concept", "descrip", "detall"]):
+                            concepto_val = row.get(col_name)
+                        elif any(k in c_lower for k in ["import", "monto", "cant"]):
+                            importe_val = row.get(col_name)
+                            
+                    # Si falló la búsqueda por nombre, asignamos por orden de columnas habitual en bancos
+                    if pd.isna(fecha_val) and len(fila_vals) > 0: fecha_val = fila_vals[0]
+                    if pd.isna(concepto_val) and len(fila_vals) > 1: concepto_val = fila_vals[1]
+                    if pd.isna(importe_val) and len(fila_vals) > 2: 
+                        # A veces el importe está en la columna 2 o 3
+                        importe_val = fila_vals[2] if len(fila_vals) > 2 else 0.0
+
                     importe_float = limpiar_importe(importe_val)
                     importe_float = round(importe_float, 2)
                     
@@ -115,7 +136,7 @@ if uploaded_file is not None:
                         f"MOV-{start_id + len(nuevas_filas):04d}",
                         fecha_str,
                         "Banco Importado",
-                        str(concepto_val),
+                        str(concepto_val) if pd.notnull(concepto_val) else "Sin concepto",
                         tipo_val,
                         cat_calc,
                         subcat_calc,
@@ -128,7 +149,7 @@ if uploaded_file is not None:
                 if nuevas_filas:
                     response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevas_filas})
                     if response.status_code == 200:
-                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados!")
+                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados correctamente!")
                         st.cache_data.clear()
                         st.rerun()
                     else:
@@ -136,7 +157,7 @@ if uploaded_file is not None:
                 else:
                     st.sidebar.warning("No hay filas válidas.")
             except Exception as err:
-                st.sidebar.error(f"Error: {err}")
+                st.sidebar.error(f"Error procesando el fichero: {err}")
 
 st.sidebar.markdown("---")
 
