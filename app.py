@@ -12,10 +12,10 @@ st.set_page_config(
 
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
-# --- CONFIGURACIÓN DE GOOGLE APPS SCRIPT ---
-# Pega aquí tu URL de despliegue de Google Apps Script si deseas leer/escribir del Sheet
+# --- URL DE GOOGLE APPS SCRIPT ---
 APPS_SCRIPT_URL = "https://script.google.com/macros/library/d/1Inca7JqdR4v1X5yCQCF6CuAFumpyo-stOpH8T8BCq5YYYVWVwoscVs_O/2"
 
+# --- FUNCIONES DE UTILIDAD ---
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
         return 0.0
@@ -68,9 +68,9 @@ def procesar_extracto_bancario(uploaded_file):
         if len(vals) < 4:
             continue
             
-        fecha_val = vals[0]     # Columna A: Fecha
-        concepto_val = vals[2]  # Columna C: Concepto
-        importe_val = vals[3]   # Columna D: Importe
+        fecha_val = vals[0]     # Columna A
+        concepto_val = vals[2]  # Columna C
+        importe_val = vals[3]   # Columna D
         
         if pd.isna(fecha_val) or pd.isna(importe_val):
             continue
@@ -97,82 +97,86 @@ def procesar_extracto_bancario(uploaded_file):
         
     return pd.DataFrame(registros)
 
-# --- GESTIÓN DE ESTADO Y CARGA INICIAL DESDE GOOGLE SHEETS ---
+# --- INICIALIZACIÓN SEGURA DE SESSION STATE ---
 if "df_movimientos" not in st.session_state:
     df_inicial = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
-    
-    # Intentar descargar datos automáticamente del Sheet si la URL está configurada
     if APPS_SCRIPT_URL != "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" and APPS_SCRIPT_URL.startswith("https://"):
         try:
-            response = requests.get(APPS_SCRIPT_URL, timeout=5)
+            response = requests.get(APPS_SCRIPT_URL, timeout=4)
             if response.status_code == 200:
                 data = response.json()
                 if data and isinstance(data, list):
-                    df_inicial = pd.DataFrame(data)
-                    # Asegurar nombres de columnas correctos si vienen de una lista plana
-                    if len(df_inicial.columns) >= 4:
-                        df_inicial.columns = ["Fecha", "Concepto", "Categoría", "Importe"][:len(df_inicial.columns)]
-        except Exception:
+                    df_temp = pd.DataFrame(data)
+                    if len(df_temp.columns) >= 4:
+                        df_temp.columns = ["Fecha", "Concepto", "Categoría", "Importe"][:len(df_temp.columns)]
+                        df_inicial = df_temp
+        except:
             pass
-            
     st.session_state.df_movimientos = df_inicial
 
-# --- SIDEBAR: CARGA DE ARCHIVO LOCAL ---
-st.sidebar.header("📁 Importar Extracto Adicional")
+# --- SIDEBAR: CARGA DE ARCHIVO ---
+st.sidebar.header("📁 Importar Extracto")
 uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
 
 if uploaded_file is not None:
-    if st.sidebar.button("Procesar y Sincronizar"):
+    if st.sidebar.button("Procesar y Cargar"):
         try:
             df_nuevo = procesar_extracto_bancario(uploaded_file)
             if not df_nuevo.empty:
                 st.session_state.df_movimientos = pd.concat([st.session_state.df_movimientos, df_nuevo], ignore_index=True).drop_duplicates()
-                st.sidebar.success(f"¡Se han añadido {len(df_nuevo)} movimientos correctamente!")
+                st.sidebar.success(f"¡Se han añadido {len(df_nuevo)} movimientos!")
+                st.rerun()
             else:
-                st.sidebar.warning("No se encontraron movimientos válidos en las columnas A, C y D.")
+                st.sidebar.warning("No se encontraron movimientos válidos.")
         except Exception as err:
-            st.sidebar.error(f"Error procesando el archivo: {err}")
+            st.sidebar.error(f"Error: {err}")
 
 st.sidebar.markdown("---")
 
-# Obtener el DataFrame actual del estado
-df = st.session_state.df_movimientos
+# --- OBTENCIÓN Y PREPARACIÓN DE DATOS ---
+df = st.session_state.df_movimientos.copy()
 
-# Asegurar formato de fecha datetime para filtros
 if not df.empty and "Fecha" in df.columns:
     df["Fecha_dt"] = pd.to_datetime(df["Fecha"], errors="coerce")
 else:
     df["Fecha_dt"] = pd.Series(dtype="datetime64[ns]")
 
-# --- SIDEBAR: FILTROS AVANZADOS ---
+# --- SIDEBAR: FILTROS (DEFINIDOS SIEMPRE DE FORMA ESTÁTICA) ---
 st.sidebar.header("🔍 Filtros Avanzados")
 
-# 1. Filtro de Categoría (Dinámico)
+# 1. Categorías seguras (siempre muestra opciones predeterminadas + las que existan)
+categorias_base = ["Todas", "Alimentación", "Transporte", "Ocio y Restaurantes", "Vivienda y Suministros", "Ingresos", "Otros"]
 if not df.empty and "Categoría" in df.columns:
-    lista_categorias = sorted(list(df["Categoría"].dropna().unique().astype(str)))
-    categorias_opciones = ["Todas"] + lista_categorias
+    cats_en_df = df["Categoría"].dropna().unique().tolist()
+    lista_categorias = sorted(list(set(categorias_base + [str(c) for c in cats_en_df])))
 else:
-    categorias_opciones = ["Todas"]
+    lista_categorias = categorias_base
 
-cat_sel = st.sidebar.selectbox("Categoría", categorias_opciones, key="filtro_categoria")
+cat_sel = st.sidebar.selectbox("Categoría", lista_categorias, key="filtro_categoria")
 
-# 2. Filtro de Tiempo
+# 2. Periodo de tiempo estático
 modo_tiempo = st.sidebar.radio(
     "Periodo de tiempo", 
     ["Todo el histórico", "Mes actual", "Mes anterior", "Rango personalizado"],
     key="filtro_modo_tiempo"
 )
 
-# Copia para filtrar
+# 3. Calendarios siempre presentes en la barra lateral para evitar bloqueos de UI
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 Rango de Fechas")
+hoy = pd.Timestamp.today()
+f_inicio = st.sidebar.date_input("Desde", value=date(hoy.year, 1, 1), key="fecha_desde")
+f_fin = st.sidebar.date_input("Hasta", value=hoy.date(), key="fecha_hasta")
+
+# --- APLICACIÓN DE FILTROS ---
 df_filtered = df.copy()
 
 if not df_filtered.empty:
-    # Aplicar categoría
+    # Filtro Categoría
     if cat_sel != "Todas":
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
     
-    # Aplicar tiempo
-    hoy = pd.Timestamp.today()
+    # Filtro Tiempo
     if modo_tiempo == "Mes actual":
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == hoy.year) & (df_filtered["Fecha_dt"].dt.month == hoy.month)]
     elif modo_tiempo == "Mes anterior":
@@ -180,12 +184,6 @@ if not df_filtered.empty:
         anio_ant = hoy.year if hoy.month > 1 else hoy.year - 1
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == anio_ant) & (df_filtered["Fecha_dt"].dt.month == mes_ant)]
     elif modo_tiempo == "Rango personalizado":
-        col_f1, col_f2 = st.sidebar.columns(2)
-        with col_f1:
-            f_inicio = st.date_input("Desde", value=date(hoy.year, 1, 1), key="fecha_desde")
-        with col_f2:
-            f_fin = st.date_input("Hasta", value=hoy.date(), key="fecha_hasta")
-            
         inicio = pd.to_datetime(f_inicio)
         fin = pd.to_datetime(f_fin)
         df_filtered = df_filtered[(df_filtered["Fecha_dt"] >= inicio) & (df_filtered["Fecha_dt"] <= fin)]
@@ -205,7 +203,7 @@ col4.metric("Nº Transacciones", len(df_filtered))
 
 st.markdown("---")
 
-# --- SECCIÓN: ÚLTIMOS MOVIMIENTOS ---
+# --- ÚLTIMOS MOVIMIENTOS ---
 if not df.empty:
     st.subheader("📅 Últimos Movimientos")
     df_recientes = df.sort_values(by="Fecha_dt", ascending=False).head(5)
@@ -262,4 +260,4 @@ if not df_filtered.empty:
         hide_index=True
     )
 else:
-    st.warning("No hay movimientos cargados en el Google Sheet o para los filtros seleccionados.")
+    st.warning("No hay movimientos cargados o que coincidan con los filtros seleccionados.")
