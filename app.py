@@ -15,6 +15,12 @@ st.title("🏦 Dashboard Bancario y Control de Finanzas")
 # --- URL DE GOOGLE APPS SCRIPT ---
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx0W8sahQ29p0NTm9mxvIXWGvtLAdZsREWM__2nHXu2-Xgd9v3LRHUHT3OK8poHn84GRA/exec"
 
+CATEGORIAS_BASE = [
+    "Alimentación", "Transporte", "Ocio y Restaurantes", "Vivienda y Suministros",
+    "Ingresos", "Farmacia", "Salud", "Seguros", "Préstamos", "Educación",
+    "Impuestos y Tasas", "Garaje", "Otros"
+]
+
 # --- FUNCIONES DE UTILIDAD ---
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
@@ -35,24 +41,51 @@ def categorizar_concepto(concepto):
     if not concepto:
         return "Otros"
     c = str(concepto).lower()
-    if any(w in c for w in ["supermercado", "mercadona", "carrefour", "dia", "lidl", "aldi", "alimentacion"]):
+    if any(w in c for w in ["supermercado", "mercadona", "carrefour", "dia", "lidl", "aldi", "alimentacion", "fruteria", "carniceria", "panaderia", "obrador", "tahona"]):
         return "Alimentación"
-    elif any(w in c for w in ["gasolina", "repsol", "cepsa", "transporte", "metro", "renfe", "uber", "cabify"]):
+    elif any(w in c for w in ["gasolina", "repsol", "cepsa", "moeve", "transporte", "metro", "renfe", "uber", "cabify", "movilidad", "crtm", "parking"]):
         return "Transporte"
     elif any(w in c for w in ["restaurante", "bar", "cafe", "mcdonalds", "glovo", "uber eats"]):
         return "Ocio y Restaurantes"
-    elif any(w in c for w in ["luz", "agua", "gas", "iberdrola", "endesa", "alquiler", "comunidad", "netflix", "spotify"]):
+    elif any(w in c for w in ["luz", "agua", "gas", "iberdrola", "endesa", "alquiler", "comunidad", "netflix", "spotify", "crunchyroll", "soundiiz", "lavanderia", "movil", "fibra", "securitas", "canal de i"]):
         return "Vivienda y Suministros"
-    elif any(w in c for w in ["nomina", "sueldo", "transferencia", "ingreso"]):
+    elif any(w in c for w in ["nomina", "sueldo", "transferencia", "ingreso", "devolucion"]):
         return "Ingresos"
+    elif any(w in c for w in ["fcia.", "farmacia"]):
+        return "Farmacia"
+    elif any(w in c for w in ["psicolog", "clinica", "medico", "dentista"]):
+        return "Salud"
+    elif any(w in c for w in ["seguro", "metlife", "mapfre", "axa"]):
+        return "Seguros"
+    elif any(w in c for w in ["prestamo", "financiacion", "oney", "volkswagen"]):
+        return "Préstamos"
+    elif any(w in c for w in ["colegio", "fundacion", "escuela", "universidad"]):
+        return "Educación"
+    elif any(w in c for w in ["ayuntamiento", "tasa", "impuesto", "tributari"]):
+        return "Impuestos y Tasas"
+    elif "garaje" in c:
+        return "Garaje"
     return "Otros"
 
-def procesar_extracto_bancario(uploaded_file):
+def construir_mapa_categorias(df):
+    """Concepto exacto (mayúsculas) -> última categoría usada para ese concepto."""
+    mapa = {}
+    if df is None or df.empty:
+        return mapa
+    for _, r in df.iterrows():
+        clave = str(r.get("Concepto", "")).strip().upper()
+        cat = r.get("Categoría")
+        if clave and pd.notna(cat) and str(cat).strip():
+            mapa[clave] = str(cat).strip()
+    return mapa
+
+def procesar_extracto_bancario(uploaded_file, mapa_categorias=None):
+    mapa_categorias = mapa_categorias or {}
     if uploaded_file.name.endswith(".csv"):
         df_raw = pd.read_csv(uploaded_file, header=None)
     else:
         df_raw = pd.read_excel(uploaded_file, header=None)
-    
+
     fila_inicio = 0
     for idx, row in df_raw.iterrows():
         fila_str = " ".join([str(val).lower() for val in row.values if pd.notna(val)])
@@ -61,40 +94,41 @@ def procesar_extracto_bancario(uploaded_file):
             break
 
     df_datos = df_raw.iloc[fila_inicio:].copy()
-    
+
     registros = []
     for _, row in df_datos.iterrows():
         vals = row.values
         if len(vals) < 4:
             continue
-            
+
         fecha_val = vals[0]     # Columna A
         concepto_val = vals[2]  # Columna C
         importe_val = vals[3]   # Columna D
-        
+
         if pd.isna(fecha_val) or pd.isna(importe_val):
             continue
-            
+
         importe_float = limpiar_importe(importe_val)
         if importe_float == 0.0 and (pd.isna(concepto_val) or str(concepto_val).strip() == ""):
             continue
-            
+
         importe_float = round(importe_float, 2)
-        
+
         fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
         if pd.isna(fecha_dt):
             continue
-            
+
         fecha_str = str(fecha_dt.date())
-        cat_val = categorizar_concepto(concepto_val)
-        
+        concepto_limpio = str(concepto_val).strip()
+        cat_val = mapa_categorias.get(concepto_limpio.upper()) or categorizar_concepto(concepto_val)
+
         registros.append({
             "Fecha": fecha_str,
-            "Concepto": str(concepto_val).strip(),
+            "Concepto": concepto_limpio,
             "Categoría": cat_val,
             "Importe": importe_float
         })
-        
+
     return pd.DataFrame(registros)
 
 def enviar_movimientos_a_sheet(df_nuevo):
@@ -105,73 +139,69 @@ def enviar_movimientos_a_sheet(df_nuevo):
     response.raise_for_status()
     return response.json()
 
-# --- TUS FUNCIONES DE UTILIDAD (limpiar_importe, categorizar_concepto, etc.) ---
-# ... (estas las dejas tal cual están más arriba) ...
+def actualizar_categorias_en_sheet(actualizaciones):
+    """Actualiza la Categoría de movimientos ya existentes en el Sheet (por Fecha+Concepto+Importe)."""
+    payload = {"action": "update_categoria", "updates": actualizaciones}
+    response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=15)
+    response.raise_for_status()
+    return response.json()
 
-# --- AQUÍ ES DONDE SUSTITUYES EL BLOQUE ---
+# --- CARGA INICIAL DESDE EL SHEET ---
 if "df_movimientos" not in st.session_state:
     df_inicial = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
-    
+
     if APPS_SCRIPT_URL != "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" and APPS_SCRIPT_URL.startswith("https://"):
         try:
             response = requests.get(APPS_SCRIPT_URL, timeout=10)
-            st.sidebar.caption(f"DEBUG: HTTP {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
-                st.sidebar.caption(f"DEBUG: registros brutos recibidos = {len(data)}")
                 if data:
                     df_temp = pd.DataFrame(data)
-                    st.sidebar.caption(f"DEBUG: columnas = {list(df_temp.columns)}")
-                    
+
                     # Limpiar cabeceras si vienen en la primera fila del Sheet
                     if len(df_temp) > 1 and any(str(val).lower() in ["fecha", "concepto", "importe"] for val in df_temp.iloc[0].values):
                         df_temp.columns = df_temp.iloc[0]
                         df_temp = df_temp.drop(0).reset_index(drop=True)
-                    
+
                     cols_lower = [str(c).lower() for c in df_temp.columns]
-                    
+
                     col_fecha = next((df_temp.columns[i] for i, c in enumerate(cols_lower) if "fecha" in c), df_temp.columns[0] if len(df_temp.columns) > 0 else None)
                     col_concepto = next((df_temp.columns[i] for i, c in enumerate(cols_lower) if "concepto" in c or "descrip" in c), df_temp.columns[2] if len(df_temp.columns) > 2 else None)
                     col_importe = next((df_temp.columns[i] for i, c in enumerate(cols_lower) if "importe" in c or "cantidad" in c), df_temp.columns[3] if len(df_temp.columns) > 3 else None)
                     col_categoria = next((df_temp.columns[i] for i, c in enumerate(cols_lower) if "categor" in c), None)
-                    st.sidebar.caption(f"DEBUG: col_fecha={col_fecha}, col_importe={col_importe}")
 
                     if col_fecha is not None and col_importe is not None:
                         registros_sheet = []
-                        descartados = 0
                         for _, row in df_temp.iterrows():
                             f_val = row[col_fecha]
                             c_val = row[col_concepto] if col_concepto else ""
                             i_val = row[col_importe]
                             cat_val = row[col_categoria] if col_categoria and pd.notna(row[col_categoria]) else None
-                            
+
                             if pd.isna(f_val) or pd.isna(i_val):
-                                descartados += 1
                                 continue
-                                
+
                             importe_float = limpiar_importe(i_val)
                             fecha_dt = pd.to_datetime(f_val, errors='coerce')
                             if pd.isna(fecha_dt):
-                                descartados += 1
                                 continue
-                                
+
                             if not cat_val or str(cat_val).strip() == "":
                                 cat_val = categorizar_concepto(c_val)
-                                
+
                             registros_sheet.append({
                                 "Fecha": str(fecha_dt.date()),
                                 "Concepto": str(c_val).strip(),
                                 "Categoría": str(cat_val).strip(),
                                 "Importe": round(importe_float, 2)
                             })
-                        st.sidebar.caption(f"DEBUG: registros_sheet válidos = {len(registros_sheet)}, descartados = {descartados}")
                         if registros_sheet:
                             df_inicial = pd.DataFrame(registros_sheet)
         except Exception as e:
             st.sidebar.error(f"Error conectando al Sheet: {e}")
-            
+
     st.session_state.df_movimientos = df_inicial
-# --- A PARTIR DE AQUÍ SIGUE EL RESTO DE TU CÓDIGO (Sidebar de archivos, filtros, etc.) ---
+
 # --- SIDEBAR: CARGA DE ARCHIVO ---
 st.sidebar.header("📁 Importar Extracto")
 uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
@@ -179,7 +209,8 @@ uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["x
 if uploaded_file is not None:
     if st.sidebar.button("Procesar y Cargar"):
         try:
-            df_nuevo = procesar_extracto_bancario(uploaded_file)
+            mapa_categorias = construir_mapa_categorias(st.session_state.df_movimientos)
+            df_nuevo = procesar_extracto_bancario(uploaded_file, mapa_categorias)
             if not df_nuevo.empty:
                 df_actual = st.session_state.df_movimientos
                 clave_actual = set(
@@ -224,19 +255,19 @@ else:
 # --- SIDEBAR: FILTROS (DEFINIDOS SIEMPRE DE FORMA ESTÁTICA) ---
 st.sidebar.header("🔍 Filtros Avanzados")
 
-# 1. Categorías seguras (siempre muestra opciones predeterminadas + las que existan)
-categorias_base = ["Todas", "Alimentación", "Transporte", "Ocio y Restaurantes", "Vivienda y Suministros", "Ingresos", "Otros"]
+# 1. Categorías seguras ("Todas" siempre primera, el resto ordenado alfabéticamente)
 if not df.empty and "Categoría" in df.columns:
     cats_en_df = df["Categoría"].dropna().unique().tolist()
-    lista_categorias = sorted(list(set(categorias_base + [str(c) for c in cats_en_df])))
 else:
-    lista_categorias = categorias_base
+    cats_en_df = []
+otras_categorias = sorted(set(CATEGORIAS_BASE + [str(c) for c in cats_en_df]))
+lista_categorias = ["Todas"] + otras_categorias
 
 cat_sel = st.sidebar.selectbox("Categoría", lista_categorias, key="filtro_categoria")
 
 # 2. Periodo de tiempo estático
 modo_tiempo = st.sidebar.radio(
-    "Periodo de tiempo", 
+    "Periodo de tiempo",
     ["Todo el histórico", "Mes actual", "Mes anterior", "Rango personalizado"],
     key="filtro_modo_tiempo"
 )
@@ -255,7 +286,7 @@ if not df_filtered.empty:
     # Filtro Categoría
     if cat_sel != "Todas":
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
-    
+
     # Filtro Tiempo
     if modo_tiempo == "Mes actual":
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == hoy.year) & (df_filtered["Fecha_dt"].dt.month == hoy.month)]
@@ -330,14 +361,53 @@ with col_chart2:
 
 st.markdown("---")
 
-# --- TABLA DE DATOS FILTRADOS ---
+# --- TABLA DE DATOS FILTRADOS (EDITABLE) ---
 st.subheader("📋 Registro Completo (Filtrado)")
+st.caption("Puedes cambiar la Categoría de cualquier fila directamente en la tabla. Se guardará en el Google Sheet.")
+
 if not df_filtered.empty:
-    df_mostrar = df_filtered[["Fecha", "Concepto", "Categoría", "Importe"]].copy()
-    st.dataframe(
-        df_mostrar.style.format({"Importe": "{:,.2f} €"}),
+    opciones_categoria = [c for c in lista_categorias if c != "Todas"]
+    df_editable = df_filtered[["Fecha", "Concepto", "Categoría", "Importe"]].copy().reset_index(drop=True)
+
+    df_editado = st.data_editor(
+        df_editable,
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        disabled=["Fecha", "Concepto", "Importe"],
+        column_config={
+            "Categoría": st.column_config.SelectboxColumn("Categoría", options=opciones_categoria, required=True),
+            "Importe": st.column_config.NumberColumn("Importe", format="%.2f €"),
+        },
+        key="editor_movimientos",
     )
+
+    filas_cambiadas = df_editado["Categoría"] != df_editable["Categoría"]
+    if filas_cambiadas.any():
+        cambios = df_editado[filas_cambiadas]
+        actualizaciones = [
+            {
+                "fecha": row["Fecha"],
+                "concepto": row["Concepto"],
+                "importe": row["Importe"],
+                "categoria": row["Categoría"],
+            }
+            for _, row in cambios.iterrows()
+        ]
+        try:
+            resultado = actualizar_categorias_en_sheet(actualizaciones)
+            if resultado.get("status") == "success":
+                for cambio in actualizaciones:
+                    mask = (
+                        (st.session_state.df_movimientos["Fecha"] == cambio["fecha"]) &
+                        (st.session_state.df_movimientos["Concepto"] == cambio["concepto"]) &
+                        (st.session_state.df_movimientos["Importe"] == cambio["importe"])
+                    )
+                    st.session_state.df_movimientos.loc[mask, "Categoría"] = cambio["categoria"]
+                st.success(f"Categoría actualizada en {resultado.get('actualizadas', len(actualizaciones))} movimiento(s).")
+                st.rerun()
+            else:
+                st.error(f"No se pudo actualizar el Sheet: {resultado.get('message')}")
+        except Exception as err:
+            st.error(f"Error actualizando categoría: {err}")
 else:
     st.warning("No hay movimientos cargados o que coincidan con los filtros seleccionados.")
