@@ -13,7 +13,7 @@ st.set_page_config(
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
 # URL de tu Google Apps Script
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec"
+APPS_SCRIPT_URL = "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI"
 
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
@@ -96,25 +96,36 @@ def procesar_extracto_bancario(uploaded_file):
         
     return pd.DataFrame(registros)
 
-# --- GESTIÓN DE ESTADO Y SINCRONIZACIÓN INICIAL DESDE GOOGLE SHEETS ---
+# --- GESTIÓN DE ESTADO ---
 if "df_movimientos" not in st.session_state:
     st.session_state.df_movimientos = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
-    
-    # Intentar recuperar los datos ya guardados en Google Sheets al iniciar la app
-    if APPS_SCRIPT_URL != "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" and APPS_SCRIPT_URL.startswith("https://"):
+
+# --- SIDEBAR: GESTIÓN DE DATOS Y CONEXIÓN CON SHEET ---
+st.sidebar.header("🔄 Sincronización con Sheet")
+if st.sidebar.button("Cargar datos desde Google Sheets"):
+    if APPS_SCRIPT_URL == "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" or not APPS_SCRIPT_URL.startswith("https://"):
+        st.sidebar.error("❌ Configura tu URL de Google Apps Script.")
+    else:
         try:
-            # Si tu Apps Script soporta una petición GET para leer, o podemos hacer una llamada
+            # Petición GET al script (requiere que devuelva los datos en JSON si está preparado)
             response = requests.get(APPS_SCRIPT_URL)
             if response.status_code == 200:
                 data_json = response.json()
                 if data_json and isinstance(data_json, list):
                     df_sheet = pd.DataFrame(data_json)
-                    # Asegurar las columnas correctas
                     if {"Fecha", "Concepto", "Categoría", "Importe"}.issubset(df_sheet.columns):
                         st.session_state.df_movimientos = df_sheet
-        except:
-            # Si el script no tiene implementado el GET todavía, arranca vacío sin romper nada
-            pass
+                        st.sidebar.success(f"¡Se han recuperado {len(df_sheet)} registros del Sheet!")
+                    else:
+                        st.sidebar.warning("El formato de los datos de Google Sheets no coincide.")
+                else:
+                    st.sidebar.info("El Google Sheet está vacío o no devolvió registros.")
+            else:
+                st.sidebar.error("Error al conectar con Google Sheets.")
+        except Exception as e:
+            st.sidebar.error(f"Nota: Tu Apps Script actual solo acepta POST. Si quieres lectura automática, asegúrate de configurar la función doGet() en Google Apps Script. (Error: {e})")
+
+st.sidebar.markdown("---")
 
 # --- SIDEBAR: CARGA DE EXCEL ---
 st.sidebar.header("📁 Importar Extracto")
@@ -145,7 +156,7 @@ if uploaded_file is not None:
                         
                         if response.status_code == 200:
                             st.session_state.df_movimientos = pd.concat([df_actual, df_a_incorporar], ignore_index=True)
-                            st.sidebar.success(f"¡Se añadieron {len(df_a_incorporar)} movimientos nuevos!")
+                            st.sidebar.success(f"¡Se añadieron y sincronizaron {len(df_a_incorporar)} movimientos nuevos!")
                         else:
                             st.sidebar.error(f"Error al sincronizar con Google Sheets: {response.text}")
                     else:
@@ -192,18 +203,16 @@ if not df_filtered.empty:
         anio_ant = hoy.year if hoy.month > 1 else hoy.year - 1
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == anio_ant) & (df_filtered["Fecha_dt"].dt.month == mes_ant)]
     elif modo_tiempo == "Rango personalizado":
-        # Calendario seguro y directo de Streamlit
-        default_start = date(hoy.year, 1, 1)
-        default_end = hoy.date()
-        
-        rango_fechas = st.sidebar.date_input(
-            "Selecciona rango de fechas",
-            value=(default_start, default_end)
-        )
-        
-        if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
-            inicio, fin = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
-            df_filtered = df_filtered[(df_filtered["Fecha_dt"] >= inicio) & (df_filtered["Fecha_dt"] <= fin)]
+        # Usamos dos selectores de fecha individuales con calendario nativo garantizado
+        col_f1, col_f2 = st.sidebar.columns(2)
+        with col_f1:
+            f_inicio = st.date_input("Desde", value=date(hoy.year, 1, 1))
+        with col_f2:
+            f_fin = st.date_input("Hasta", value=hoy.date())
+            
+        inicio = pd.to_datetime(f_inicio)
+        fin = pd.to_datetime(f_fin)
+        df_filtered = df_filtered[(df_filtered["Fecha_dt"] >= inicio) & (df_filtered["Fecha_dt"] <= fin)]
 
     df_filtered["Importe"] = pd.to_numeric(df_filtered["Importe"], errors="coerce").fillna(0.0)
 
