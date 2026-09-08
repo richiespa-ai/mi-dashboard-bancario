@@ -115,10 +115,13 @@ if "df_movimientos" not in st.session_state:
     if APPS_SCRIPT_URL != "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" and APPS_SCRIPT_URL.startswith("https://"):
         try:
             response = requests.get(APPS_SCRIPT_URL, timeout=10)
+            st.sidebar.caption(f"DEBUG: HTTP {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
+                st.sidebar.caption(f"DEBUG: registros brutos recibidos = {len(data)}")
                 if data:
                     df_temp = pd.DataFrame(data)
+                    st.sidebar.caption(f"DEBUG: columnas = {list(df_temp.columns)}")
                     
                     # Limpiar cabeceras si vienen en la primera fila del Sheet
                     if len(df_temp) > 1 and any(str(val).lower() in ["fecha", "concepto", "importe"] for val in df_temp.iloc[0].values):
@@ -131,9 +134,11 @@ if "df_movimientos" not in st.session_state:
                     col_concepto = next((df_temp.columns[i] for i, c in enumerate(cols_lower) if "concepto" in c or "descrip" in c), df_temp.columns[2] if len(df_temp.columns) > 2 else None)
                     col_importe = next((df_temp.columns[i] for i, c in enumerate(cols_lower) if "importe" in c or "cantidad" in c), df_temp.columns[3] if len(df_temp.columns) > 3 else None)
                     col_categoria = next((df_temp.columns[i] for i, c in enumerate(cols_lower) if "categor" in c), None)
+                    st.sidebar.caption(f"DEBUG: col_fecha={col_fecha}, col_importe={col_importe}")
 
                     if col_fecha is not None and col_importe is not None:
                         registros_sheet = []
+                        descartados = 0
                         for _, row in df_temp.iterrows():
                             f_val = row[col_fecha]
                             c_val = row[col_concepto] if col_concepto else ""
@@ -141,11 +146,13 @@ if "df_movimientos" not in st.session_state:
                             cat_val = row[col_categoria] if col_categoria and pd.notna(row[col_categoria]) else None
                             
                             if pd.isna(f_val) or pd.isna(i_val):
+                                descartados += 1
                                 continue
                                 
                             importe_float = limpiar_importe(i_val)
                             fecha_dt = pd.to_datetime(f_val, errors='coerce')
                             if pd.isna(fecha_dt):
+                                descartados += 1
                                 continue
                                 
                             if not cat_val or str(cat_val).strip() == "":
@@ -157,13 +164,13 @@ if "df_movimientos" not in st.session_state:
                                 "Categoría": str(cat_val).strip(),
                                 "Importe": round(importe_float, 2)
                             })
+                        st.sidebar.caption(f"DEBUG: registros_sheet válidos = {len(registros_sheet)}, descartados = {descartados}")
                         if registros_sheet:
                             df_inicial = pd.DataFrame(registros_sheet)
         except Exception as e:
             st.sidebar.error(f"Error conectando al Sheet: {e}")
             
     st.session_state.df_movimientos = df_inicial
-
 # --- A PARTIR DE AQUÍ SIGUE EL RESTO DE TU CÓDIGO (Sidebar de archivos, filtros, etc.) ---
 # --- SIDEBAR: CARGA DE ARCHIVO ---
 st.sidebar.header("📁 Importar Extracto")
