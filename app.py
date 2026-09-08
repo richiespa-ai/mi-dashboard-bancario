@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests
 from datetime import datetime, date
 
 st.set_page_config(
@@ -12,9 +11,7 @@ st.set_page_config(
 
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
-# URL de tu Google Apps Script (para enviar los nuevos)
-APPS_SCRIPT_URL = "https://script.google.com/macros/library/d/1Inca7JqdR4v1X5yCQCF6CuAFumpyo-stOpH8T8BCq5YYYVWVwoscVs_O/2"
-
+# --- FUNCIONES DE UTILIDAD ---
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
         return 0.0
@@ -100,38 +97,17 @@ def procesar_extracto_bancario(uploaded_file):
 if "df_movimientos" not in st.session_state:
     st.session_state.df_movimientos = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
 
-# --- SIDEBAR: CARGA DE EXCEL ---
+# --- SIDEBAR: CARGA DE ARCHIVO ---
 st.sidebar.header("📁 Importar Extracto")
 uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
 
 if uploaded_file is not None:
-    if st.sidebar.button("Cargar y Sincronizar Movimientos"):
+    if st.sidebar.button("Procesar y Cargar en la App"):
         try:
             df_nuevo = procesar_extracto_bancario(uploaded_file)
             if not df_nuevo.empty:
-                df_actual = st.session_state.df_movimientos
-                
-                if df_actual.empty:
-                    df_a_incorporar = df_nuevo
-                else:
-                    df_actual["clave_unitaria"] = df_actual["Fecha"].astype(str) + "_" + df_actual["Concepto"].astype(str) + "_" + df_actual["Importe"].astype(str)
-                    df_nuevo["clave_unitaria"] = df_nuevo["Fecha"].astype(str) + "_" + df_nuevo["Concepto"].astype(str) + "_" + df_nuevo["Importe"].astype(str)
-                    
-                    df_a_incorporar = df_nuevo[~df_nuevo["clave_unitaria"].isin(df_actual["clave_unitaria"])].drop(columns=["clave_unitaria"])
-                    df_actual = df_actual.drop(columns=["clave_unitaria"], errors="ignore")
-                
-                if not df_a_incorporar.empty:
-                    # Intentar volcar al Sheet si está configurado (sin romper la app si falla)
-                    if APPS_SCRIPT_URL != "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" and APPS_SCRIPT_URL.startswith("https://"):
-                        try:
-                            requests.post(APPS_SCRIPT_URL, json={"rows": df_a_incorporar.values.tolist()})
-                        except:
-                            pass
-                    
-                    st.session_state.df_movimientos = pd.concat([df_actual, df_a_incorporar], ignore_index=True)
-                    st.sidebar.success(f"¡Se han añadido {len(df_a_incorporar)} movimientos nuevos correctamente!")
-                else:
-                    st.sidebar.warning("⚠️ Todos los movimientos de este archivo ya estaban registrados.")
+                st.session_state.df_movimientos = df_nuevo
+                st.sidebar.success(f"¡Se han cargado {len(df_nuevo)} movimientos correctamente!")
             else:
                 st.sidebar.warning("No se encontraron movimientos válidos en las columnas A, C y D.")
         except Exception as err:
@@ -139,10 +115,11 @@ if uploaded_file is not None:
 
 st.sidebar.markdown("---")
 
+# Obtener el DataFrame actual del estado
 df = st.session_state.df_movimientos
 
-# Asegurar formato de fecha en el DataFrame maestro
-if not df.empty:
+# Asegurar formato de fecha datetime para filtros
+if not df.empty and "Fecha" in df.columns:
     df["Fecha_dt"] = pd.to_datetime(df["Fecha"], errors="coerce")
 else:
     df["Fecha_dt"] = pd.Series(dtype="datetime64[ns]")
@@ -150,24 +127,32 @@ else:
 # --- SIDEBAR: FILTROS AVANZADOS ---
 st.sidebar.header("🔍 Filtros Avanzados")
 
-# 1. Filtro de Categoría (Dinámico basado en los datos cargados)
-lista_categorias = sorted(list(df["Categoría"].dropna().unique())) if not df.empty else []
-categorias = ["Todas"] + lista_categorias
-cat_sel = st.sidebar.selectbox("Categoría", categorias)
+# 1. Filtro de Categoría
+if not df.empty and "Categoría" in df.columns:
+    lista_categorias = sorted(list(df["Categoría"].dropna().unique()))
+    categorias_opciones = ["Todas"] + lista_categorias
+else:
+    categorias_opciones = ["Todas"]
+
+cat_sel = st.sidebar.selectbox("Categoría", categorias_opciones, key="filtro_categoria")
 
 # 2. Filtro de Tiempo
-modo_tiempo = st.sidebar.radio("Periodo de tiempo", ["Todo el histórico", "Mes actual", "Mes anterior", "Rango personalizado"])
+modo_tiempo = st.sidebar.radio(
+    "Periodo de tiempo", 
+    ["Todo el histórico", "Mes actual", "Mes anterior", "Rango personalizado"],
+    key="filtro_modo_tiempo"
+)
 
+# Copia para filtrar
 df_filtered = df.copy()
 
 if not df_filtered.empty:
-    # Aplicar filtro de categoría
+    # Aplicar categoría
     if cat_sel != "Todas":
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
     
-    # Aplicar filtros temporales
+    # Aplicar tiempo
     hoy = pd.Timestamp.today()
-    
     if modo_tiempo == "Mes actual":
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == hoy.year) & (df_filtered["Fecha_dt"].dt.month == hoy.month)]
     elif modo_tiempo == "Mes anterior":
@@ -177,9 +162,9 @@ if not df_filtered.empty:
     elif modo_tiempo == "Rango personalizado":
         col_f1, col_f2 = st.sidebar.columns(2)
         with col_f1:
-            f_inicio = st.date_input("Desde", value=date(hoy.year, 1, 1))
+            f_inicio = st.date_input("Desde", value=date(hoy.year, 1, 1), key="fecha_desde")
         with col_f2:
-            f_fin = st.date_input("Hasta", value=hoy.date())
+            f_fin = st.date_input("Hasta", value=hoy.date(), key="fecha_hasta")
             
         inicio = pd.to_datetime(f_inicio)
         fin = pd.to_datetime(f_fin)
@@ -200,9 +185,9 @@ col4.metric("Nº Transacciones", len(df_filtered))
 
 st.markdown("---")
 
-# --- SECCIÓN: ÚLTIMOS MOVIMIENTOS ---
+# --- SECCIÓN: PRÓXIMOS RECIBOS / ÚLTIMOS MOVIMIENTOS ---
 if not df.empty:
-    st.subheader("📅 Últimos Movimientos / Recibos del Mes")
+    st.subheader("📅 Últimos Movimientos del Mes")
     df_recientes = df.sort_values(by="Fecha_dt", ascending=False).head(5)
     cols_mostrar_recientes = df_recientes[["Fecha", "Concepto", "Categoría", "Importe"]].copy()
     cols_mostrar_recientes["Importe"] = cols_mostrar_recientes["Importe"].apply(lambda x: f"{x:,.2f} €")
@@ -222,9 +207,9 @@ with col_chart1:
             fig_cat = px.pie(df_gastos, values="Importe_Abs", names="Categoría", hole=0.4)
             st.plotly_chart(fig_cat, use_container_width=True)
         else:
-            st.info("No hay gastos registrados en este filtro.")
+            st.info("No hay gastos registrados para este filtro.")
     else:
-        st.info("Sube un archivo Excel para ver los gráficos.")
+        st.info("Sube un archivo para ver los gráficos.")
 
 with col_chart2:
     st.subheader("📈 Flujo de Caja por Fecha")
@@ -241,9 +226,9 @@ with col_chart2:
             )
             st.plotly_chart(fig_line, use_container_width=True)
         else:
-            st.info("No hay fechas válidas en este filtro.")
+            st.info("No hay fechas válidas para este filtro.")
     else:
-        st.info("Sube un archivo Excel para ver el flujo de caja.")
+        st.info("Sube un archivo para ver el flujo de caja.")
 
 st.markdown("---")
 
@@ -257,4 +242,4 @@ if not df_filtered.empty:
         hide_index=True
     )
 else:
-    st.warning("No hay movimientos cargados o para los filtros seleccionados. Sube tu extracto bancario en el menú lateral.")
+    st.warning("No hay movimientos cargados o para los filtros seleccionados. Por favor, sube tu archivo en el menú lateral.")
