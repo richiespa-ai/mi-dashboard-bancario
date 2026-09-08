@@ -97,6 +97,14 @@ def procesar_extracto_bancario(uploaded_file):
         
     return pd.DataFrame(registros)
 
+def enviar_movimientos_a_sheet(df_nuevo):
+    """Envía filas nuevas al Apps Script (doPost) para que las añada al Sheet sin duplicar."""
+    filas = df_nuevo[["Fecha", "Concepto", "Categoría", "Importe"]].values.tolist()
+    payload = {"rows": filas}
+    response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=15)
+    response.raise_for_status()
+    return response.json()
+
 # --- TUS FUNCIONES DE UTILIDAD (limpiar_importe, categorizar_concepto, etc.) ---
 # ... (estas las dejas tal cual están más arriba) ...
 
@@ -166,9 +174,31 @@ if uploaded_file is not None:
         try:
             df_nuevo = procesar_extracto_bancario(uploaded_file)
             if not df_nuevo.empty:
-                st.session_state.df_movimientos = pd.concat([st.session_state.df_movimientos, df_nuevo], ignore_index=True).drop_duplicates()
-                st.sidebar.success(f"¡Se han añadido {len(df_nuevo)} movimientos!")
-                st.rerun()
+                df_actual = st.session_state.df_movimientos
+                clave_actual = set(
+                    (str(r["Fecha"]), str(r["Concepto"]), str(r["Importe"]))
+                    for _, r in df_actual.iterrows()
+                )
+                df_nuevo["_clave"] = df_nuevo.apply(
+                    lambda r: (str(r["Fecha"]), str(r["Concepto"]), str(r["Importe"])), axis=1
+                )
+                df_a_anadir = df_nuevo[~df_nuevo["_clave"].isin(clave_actual)].drop(columns=["_clave"])
+
+                if not df_a_anadir.empty:
+                    try:
+                        resultado = enviar_movimientos_a_sheet(df_a_anadir)
+                        if resultado.get("status") != "success":
+                            st.sidebar.error(f"El Sheet rechazó los datos: {resultado.get('message')}")
+                    except Exception as err_post:
+                        st.sidebar.error(f"No se pudo guardar en el Sheet: {err_post}")
+
+                    st.session_state.df_movimientos = pd.concat(
+                        [df_actual, df_a_anadir], ignore_index=True
+                    )
+                    st.sidebar.success(f"¡Se han añadido {len(df_a_anadir)} movimientos nuevos!")
+                    st.rerun()
+                else:
+                    st.sidebar.info("Todos los movimientos del archivo ya estaban registrados.")
             else:
                 st.sidebar.warning("No se encontraron movimientos válidos.")
         except Exception as err:
