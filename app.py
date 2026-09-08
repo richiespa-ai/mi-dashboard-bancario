@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
-from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(
     page_title="Dashboard Bancario",
@@ -12,8 +11,8 @@ st.set_page_config(
 
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1tfnhAs8VeaciHXWJ4J0UDxkhvOiuR-_FvDRnHD0tqxI/edit"
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec"
+# URL de tu Google Apps Script
+APPS_SCRIPT_URL = "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI"
 
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
@@ -30,85 +29,52 @@ def limpiar_importe(val):
     except:
         return 0.0
 
-@st.cache_data(ttl=10)
-def load_all_data():
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    cols_esperadas = ["Fecha", "Concepto", "Categoría", "Importe"]
-    
-    try:
-        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", ttl=0)
-    except Exception:
-        df_mov = pd.DataFrame(columns=cols_esperadas)
-
-    if df_mov is None or df_mov.empty:
-        df_mov = pd.DataFrame(columns=cols_esperadas)
-    else:
-        df_mov.columns = [str(c).strip() for c in df_mov.columns]
-        for col in cols_esperadas:
-            if col not in df_mov.columns:
-                df_mov[col] = None
-        
-        df_mov['Importe'] = df_mov['Importe'].apply(limpiar_importe)
-        df_mov['Importe'] = pd.to_numeric(df_mov['Importe'], errors='coerce').fillna(0.0)
-        df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
-
-    try:
-        df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl=0)
-        if df_cat is not None and not df_cat.empty:
-            df_cat.columns = [str(c).strip() for c in df_cat.columns]
-        else:
-            df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría"])
-    except Exception:
-        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría"])
-
-    return df_mov, df_cat
-
-df, df_cat = load_all_data()
-
-def categorizar_concepto(concepto, df_cat):
-    if df_cat.empty or not concepto:
-        return "Sin Categorizar"
-    concepto_lower = str(concepto).lower()
-    for _, row in df_cat.iterrows():
-        subcat = str(row.get("Subcategoría", ""))
-        cat_principal = str(row.get("Categoría Principal", "Otros"))
-        if subcat and subcat.lower() in concepto_lower:
-            return cat_principal
-    return "Sin Categorizar"
+def categorizar_concepto(concepto):
+    if not concepto:
+        return "Otros"
+    c = str(concepto).lower()
+    if any(w in c for w in ["supermercado", "mercadona", "carrefour", "dia", "lidl", "aldi", "alimentacion"]):
+        return "Alimentación"
+    elif any(w in c for w in ["gasolina", "repsol", "cepsa", "transporte", "metro", "renfe", "uber", "cabify"]):
+        return "Transporte"
+    elif any(w in c for w in ["restaurante", "bar", "cafe", "mcdonalds", "glovo", "uber eats"]):
+        return "Ocio y Restaurantes"
+    elif any(w in c for w in ["luz", "agua", "gas", "iberdrola", "endesa", "alquiler", "comunidad"]):
+        return "Vivienda y Suministros"
+    elif any(w in c for w in ["nomina", "sueldo", "transferencia", "ingreso"]):
+        return "Ingresos"
+    return "Otros"
 
 def procesar_extracto_bancario(uploaded_file):
-    """Lee el excel sin cabecera fija, detecta dónde empiezan los datos y extrae por posición (A, C, D)."""
+    """Lee el excel o csv localmente, busca la cabecera y extrae:
+       - Columna A: Fecha
+       - Columna C: Concepto
+       - Columna D: Importe
+    """
     if uploaded_file.name.endswith(".csv"):
         df_raw = pd.read_csv(uploaded_file, header=None)
     else:
         df_raw = pd.read_excel(uploaded_file, header=None)
     
     fila_inicio = 0
-    # Buscar dinámicamente la fila de cabecera o datos buscando la palabra 'Fecha' o 'Operación'
     for idx, row in df_raw.iterrows():
         fila_str = " ".join([str(val).lower() for val in row.values if pd.notna(val)])
         if "fecha" in fila_str or "operacion" in fila_str or "concepto" in fila_str:
-            fila_inicio = idx + 1  # Los datos empiezan justo debajo de la cabecera
+            fila_inicio = idx + 1
             break
-            
-    # Si no encuentra cabecera clara, asumimos que los datos empiezan en la primera fila con valores válidos
-    if fila_inicio >= len(df_raw):
-        fila_inicio = 0
 
     df_datos = df_raw.iloc[fila_inicio:].copy()
     
-    filas_procesadas = []
+    registros = []
     for _, row in df_datos.iterrows():
         vals = row.values
-        # Asegurarnos de que la fila tiene suficientes columnas (A=0, C=2, D=3)
         if len(vals) < 4:
             continue
             
-        fecha_val = vals[0]     # Columna A: Fecha de Operación
-        concepto_val = vals[2]  # Columna C: Concepto
-        importe_val = vals[3]   # Columna D: Importe
+        fecha_val = vals[0]     # Columna A
+        concepto_val = vals[2]  # Columna C
+        importe_val = vals[3]   # Columna D
         
-        # Validar que al menos la fecha o el importe tengan sentido para descartar filas vacías o de resumen
         if pd.isna(fecha_val) or pd.isna(importe_val):
             continue
             
@@ -120,50 +86,73 @@ def procesar_extracto_bancario(uploaded_file):
         
         fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
         if pd.isna(fecha_dt):
-            continue # Si no es una fecha válida, descartamos la fila (evita cabeceras repetidas)
+            continue
             
         fecha_str = str(fecha_dt.date())
-        cat_val = categorizar_concepto(concepto_val, df_cat)
+        cat_val = categorizar_concepto(concepto_val)
         
-        filas_procesadas.append([
-            fecha_str,
-            str(concepto_val).strip(),
-            cat_val,
-            importe_float
-        ])
+        registros.append({
+            "Fecha": fecha_str,
+            "Concepto": str(concepto_val).strip(),
+            "Categoría": cat_val,
+            "Importe": importe_float
+        })
         
-    return filas_procesadas
+    return pd.DataFrame(registros)
+
+# --- GESTIÓN DE ESTADO ---
+if "df_movimientos" not in st.session_state:
+    st.session_state.df_movimientos = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
 
 # --- SIDEBAR: CARGA DE EXCEL ---
 st.sidebar.header("📁 Importar Extracto")
 uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
 
 if uploaded_file is not None:
-    if st.sidebar.button("Volcar a Google Sheets"):
+    if st.sidebar.button("Cargar y Sincronizar Nuevos Movimientos"):
         if APPS_SCRIPT_URL == "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" or not APPS_SCRIPT_URL.startswith("https://"):
-            st.sidebar.error("❌ Configura tu URL de Google Apps Script en el código.")
+            st.sidebar.error("❌ Configura primero tu URL de Google Apps Script.")
         else:
             try:
-                nuevas_filas = procesar_extracto_bancario(uploaded_file)
-                
-                if nuevas_filas:
-                    response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevas_filas})
-                    if response.status_code == 200:
-                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados correctamente!")
-                        st.cache_data.clear()
-                        st.rerun()
+                df_nuevo = procesar_extracto_bancario(uploaded_file)
+                if not df_nuevo.empty:
+                    df_actual = st.session_state.df_movimientos
+                    
+                    if df_actual.empty:
+                        df_a_incorporar = df_nuevo
                     else:
-                        st.sidebar.error(f"Error en Apps Script: {response.text}")
+                        # Crear una clave única temporal (Fecha + Concepto + Importe) para filtrar duplicados exactos
+                        df_actual["clave_unitaria"] = df_actual["Fecha"].astype(str) + "_" + df_actual["Concepto"].astype(str) + "_" + df_actual["Importe"].astype(str)
+                        df_nuevo["clave_unitaria"] = df_nuevo["Fecha"].astype(str) + "_" + df_nuevo["Concepto"].astype(str) + "_" + df_nuevo["Importe"].astype(str)
+                        
+                        # Filtrar solo los registros que NO existan previamente en la herramienta
+                        df_a_incorporar = df_nuevo[~df_nuevo["clave_unitaria"].isin(df_actual["clave_unitaria"])].drop(columns=["clave_unitaria"])
+                        df_actual = df_actual.drop(columns=["clave_unitaria"])
+                    
+                    if not df_a_incorporar.empty:
+                        # 1. Enviar ÚNICAMENTE las nuevas filas a Google Sheets mediante Apps Script
+                        nuevos_datos_lista = df_a_incorporar.values.tolist()
+                        response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevos_datos_lista})
+                        
+                        if response.status_code == 200:
+                            # 2. Actualizar la memoria local (Session State) sumando solo lo nuevo
+                            st.session_state.df_movimientos = pd.concat([df_actual, df_a_incorporar], ignore_index=True)
+                            st.sidebar.success(f"¡Se han añadido y sincronizado {len(df_a_incorporar)} movimientos nuevos! (Se ignoraron duplicados)")
+                        else:
+                            st.sidebar.error(f"Error al sincronizar con Google Sheets: {response.text}")
+                    else:
+                        st.sidebar.warning("⚠️ Todos los movimientos de este archivo ya estaban registrados anteriormente.")
                 else:
-                    st.sidebar.warning("No se han encontrado filas de movimientos válidas en el archivo.")
+                    st.sidebar.warning("No se encontraron movimientos válidos en las columnas A, C y D.")
             except Exception as err:
-                st.sidebar.error(f"Error procesando el fichero: {err}")
+                st.sidebar.error(f"Error procesando el archivo: {err}")
 
 st.sidebar.markdown("---")
 
+df = st.session_state.df_movimientos
+
 # --- SIDEBAR: FILTROS ---
 st.sidebar.header("🔍 Filtros")
-
 categorias = ["Todas"] + sorted(list(df["Categoría"].dropna().unique())) if not df.empty else ["Todas"]
 cat_sel = st.sidebar.selectbox("Categoría", categorias)
 
@@ -171,6 +160,7 @@ df_filtered = df.copy()
 if not df_filtered.empty:
     if cat_sel != "Todas":
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
+    df_filtered["Importe"] = pd.to_numeric(df_filtered["Importe"], errors="coerce").fillna(0.0)
 
 # --- DASHBOARD DE KPIS ---
 ingresos = df_filtered[df_filtered["Importe"] > 0]["Importe"].sum() if not df_filtered.empty else 0.0
@@ -197,14 +187,16 @@ with col_chart1:
             fig_cat = px.pie(df_gastos, values="Importe_Abs", names="Categoría", hole=0.4)
             st.plotly_chart(fig_cat, use_container_width=True)
         else:
-            st.info("No hay gastos registrados.")
+            st.info("No hay gastos registrados en la selección.")
     else:
-        st.info("Base de datos vacía.")
+        st.info("Sube un archivo Excel para ver los gráficos.")
 
 with col_chart2:
     st.subheader("📈 Flujo de Caja")
     if not df_filtered.empty:
-        df_trend = df_filtered.dropna(subset=["Fecha"]).sort_values("Fecha")
+        df_trend = df_filtered.copy()
+        df_trend["Fecha"] = pd.to_datetime(df_trend["Fecha"], errors="coerce")
+        df_trend = df_trend.dropna(subset=["Fecha"]).sort_values("Fecha")
         if not df_trend.empty:
             df_trend["Tipo"] = df_trend["Importe"].apply(lambda x: "Ingreso" if x >= 0 else "Gasto")
             fig_line = px.bar(
@@ -218,19 +210,17 @@ with col_chart2:
         else:
             st.info("No hay fechas válidas.")
     else:
-        st.info("Base de datos vacía.")
+        st.info("Sube un archivo Excel para ver el flujo de caja.")
 
 st.markdown("---")
 
 # --- TABLA DE DATOS FORMATEADA ---
-st.subheader("📋 Registro de Movimientos (`Movimientos`)")
+st.subheader("📋 Registro de Movimientos")
 if not df_filtered.empty:
-    df_mostrar = df_filtered.copy()
-    df_mostrar['Fecha'] = df_mostrar['Fecha'].dt.strftime('%Y-%m-%d')
     st.dataframe(
-        df_mostrar.style.format({"Importe": "{:,.2f} €"}),
+        df_filtered.style.format({"Importe": "{:,.2f} €"}),
         use_container_width=True,
         hide_index=True
     )
 else:
-    st.warning("No hay movimientos registrados.")
+    st.warning("No hay movimientos cargados actualmente. Utiliza el panel lateral para subir tu extracto.")
