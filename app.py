@@ -12,8 +12,8 @@ st.set_page_config(
 
 st.title("🏦 Dashboard Bancario y Control de Finanzas")
 
-# URL de tu Google Apps Script
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRDfF6PNIe985d984QHbSP66gBVaD3TJWgEKBvZPzkt9N_PtIa63AN-9dgwrJamV4NCA/exec"
+# URL de tu Google Apps Script actual
+APPS_SCRIPT_URL = "https://script.google.com/macros/library/d/1Inca7JqdR4v1X5yCQCF6CuAFumpyo-stOpH8T8BCq5YYYVWVwoscVs_O/2"
 
 def limpiar_importe(val):
     if pd.isna(val) or val == "":
@@ -100,35 +100,34 @@ def procesar_extracto_bancario(uploaded_file):
 if "df_movimientos" not in st.session_state:
     st.session_state.df_movimientos = pd.DataFrame(columns=["Fecha", "Concepto", "Categoría", "Importe"])
 
-# --- SIDEBAR: GESTIÓN DE DATOS Y CONEXIÓN CON SHEET ---
-st.sidebar.header("🔄 Sincronización con Sheet")
-if st.sidebar.button("Cargar datos desde Google Sheets"):
+# --- SIDEBAR: RECUPERAR DATOS DE GOOGLE SHEETS ---
+st.sidebar.header("🔄 Sincronización")
+if st.sidebar.button("Cargar datos guardados de Google Sheets"):
     if APPS_SCRIPT_URL == "TU_URL_DE_GOOGLE_APPS_SCRIPT_AQUI" or not APPS_SCRIPT_URL.startswith("https://"):
         st.sidebar.error("❌ Configura tu URL de Google Apps Script.")
     else:
         try:
-            # Petición GET al script (requiere que devuelva los datos en JSON si está preparado)
             response = requests.get(APPS_SCRIPT_URL)
             if response.status_code == 200:
                 data_json = response.json()
-                if data_json and isinstance(data_json, list):
+                if data_json and isinstance(data_json, list) and len(data_json) > 0:
                     df_sheet = pd.DataFrame(data_json)
                     if {"Fecha", "Concepto", "Categoría", "Importe"}.issubset(df_sheet.columns):
                         st.session_state.df_movimientos = df_sheet
                         st.sidebar.success(f"¡Se han recuperado {len(df_sheet)} registros del Sheet!")
                     else:
-                        st.sidebar.warning("El formato de los datos de Google Sheets no coincide.")
+                        st.sidebar.warning("Los datos del Sheet no tienen el formato esperado.")
                 else:
-                    st.sidebar.info("El Google Sheet está vacío o no devolvió registros.")
+                    st.sidebar.info("El Google Sheet está actualmente vacío.")
             else:
                 st.sidebar.error("Error al conectar con Google Sheets.")
         except Exception as e:
-            st.sidebar.error(f"Nota: Tu Apps Script actual solo acepta POST. Si quieres lectura automática, asegúrate de configurar la función doGet() en Google Apps Script. (Error: {e})")
+            st.sidebar.error(f"Error de conexión: {e}")
 
 st.sidebar.markdown("---")
 
 # --- SIDEBAR: CARGA DE EXCEL ---
-st.sidebar.header("📁 Importar Extracto")
+st.sidebar.header("📁 Importar Extracto Nuevo")
 uploaded_file = st.sidebar.file_uploader("Subir archivo (Excel o CSV)", type=["xlsx", "xls", "csv"])
 
 if uploaded_file is not None:
@@ -203,7 +202,6 @@ if not df_filtered.empty:
         anio_ant = hoy.year if hoy.month > 1 else hoy.year - 1
         df_filtered = df_filtered[(df_filtered["Fecha_dt"].dt.year == anio_ant) & (df_filtered["Fecha_dt"].dt.month == mes_ant)]
     elif modo_tiempo == "Rango personalizado":
-        # Usamos dos selectores de fecha individuales con calendario nativo garantizado
         col_f1, col_f2 = st.sidebar.columns(2)
         with col_f1:
             f_inicio = st.date_input("Desde", value=date(hoy.year, 1, 1))
