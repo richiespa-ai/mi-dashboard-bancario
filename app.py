@@ -33,18 +33,14 @@ def limpiar_importe(val):
 @st.cache_data(ttl=10)
 def load_all_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
+    cols_esperadas = ["Fecha", "Concepto", "Categoría", "Importe"]
     
     try:
         df_mov = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Movimientos", ttl=0)
     except Exception:
-        df_mov = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
+        df_mov = pd.DataFrame(columns=cols_esperadas)
 
-    cols_esperadas = [
-        "ID_Movimiento", "Fecha", "Cuenta / Banco", "Concepto / Descripción",
-        "Tipo", "Categoría", "Subcategoría", "Importe", "Estado", "Notas / Observaciones"
-    ]
-    
-    if df_mov.empty:
+    if df_mov is None or df_mov.empty:
         df_mov = pd.DataFrame(columns=cols_esperadas)
     else:
         df_mov.columns = [str(c).strip() for c in df_mov.columns]
@@ -58,9 +54,12 @@ def load_all_data():
 
     try:
         df_cat = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Categorías", ttl=0)
-        df_cat.columns = [str(c).strip() for c in df_cat.columns]
+        if df_cat is not None and not df_cat.empty:
+            df_cat.columns = [str(c).strip() for c in df_cat.columns]
+        else:
+            df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría"])
     except Exception:
-        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría", "Tipo"])
+        df_cat = pd.DataFrame(columns=["Categoría Principal", "Subcategoría"])
 
     return df_mov, df_cat
 
@@ -68,14 +67,14 @@ df, df_cat = load_all_data()
 
 def categorizar_concepto(concepto, df_cat):
     if df_cat.empty or not concepto:
-        return "Sin Categorizar", "General"
+        return "Sin Categorizar"
     concepto_lower = str(concepto).lower()
     for _, row in df_cat.iterrows():
         subcat = str(row.get("Subcategoría", ""))
         cat_principal = str(row.get("Categoría Principal", "Otros"))
         if subcat and subcat.lower() in concepto_lower:
-            return cat_principal, subcat
-    return "Sin Categorizar", "Pendiente"
+            return cat_principal
+    return "Sin Categorizar"
 
 # --- SIDEBAR: CARGA DE EXCEL ---
 st.sidebar.header("📁 Importar Extracto")
@@ -87,69 +86,43 @@ if uploaded_file is not None:
             st.sidebar.error("❌ Configura tu URL de Google Apps Script en el código.")
         else:
             try:
-                # Leer el archivo excel/csv asegurando que coja bien las columnas
                 if uploaded_file.name.endswith(".csv"):
                     df_excel = pd.read_csv(uploaded_file)
                 else:
                     df_excel = pd.read_excel(uploaded_file)
                 
+                df_excel.columns = [str(c).strip() for c in df_excel.columns]
                 nuevas_filas = []
-                start_id = len(df) + 1
                 
                 for idx, row in df_excel.iterrows():
-                    # Si el excel tiene nombres de columnas específicos, los intentamos buscar; 
-                    # si no, cogemos las columnas por su posición (índices 0, 1, 2...) adaptado a extractos bancarios comunes
                     fila_vals = row.values
                     
-                    # Intentamos extraer fecha, concepto e importe de forma inteligente por posición o nombres
-                    fecha_val = None
-                    concepto_val = None
-                    importe_val = None
+                    fecha_val = row.get("Fecha") or row.get("Fecha Valor") or (fila_vals[0] if len(fila_vals) > 0 else None)
+                    concepto_val = row.get("Concepto") or row.get("Descripción") or (fila_vals[1] if len(fila_vals) > 1 else "Sin concepto")
+                    cat_val = row.get("Categoría") if "Categoría" in df_excel.columns else None
+                    importe_val = row.get("Importe") or row.get("Monto") or (fila_vals[2] if len(fila_vals) > 2 else 0.0)
                     
-                    # Buscar por nombre de columna si existen
-                    for col_name in df_excel.columns:
-                        c_lower = str(col_name).lower()
-                        if any(k in c_lower for k in ["fecha", "f.oper", "f_oper"]):
-                            fecha_val = row.get(col_name)
-                        elif any(k in c_lower for k in ["concept", "descrip", "detall"]):
-                            concepto_val = row.get(col_name)
-                        elif any(k in c_lower for k in ["import", "monto", "cant"]):
-                            importe_val = row.get(col_name)
-                            
-                    # Si falló la búsqueda por nombre, asignamos por orden de columnas habitual en bancos
-                    if pd.isna(fecha_val) and len(fila_vals) > 0: fecha_val = fila_vals[0]
-                    if pd.isna(concepto_val) and len(fila_vals) > 1: concepto_val = fila_vals[1]
-                    if pd.isna(importe_val) and len(fila_vals) > 2: 
-                        # A veces el importe está en la columna 2 o 3
-                        importe_val = fila_vals[2] if len(fila_vals) > 2 else 0.0
-
                     importe_float = limpiar_importe(importe_val)
                     importe_float = round(importe_float, 2)
                     
                     fecha_dt = pd.to_datetime(fecha_val, errors='coerce')
                     fecha_str = str(fecha_dt.date()) if pd.notnull(fecha_dt) else str(pd.Timestamp.now().date())
-                    tipo_val = "Ingreso" if importe_float >= 0 else "Gasto"
                     
-                    cat_calc, subcat_calc = categorizar_concepto(concepto_val, df_cat)
+                    if not cat_val or pd.isna(cat_val):
+                        cat_val = categorizar_concepto(concepto_val, df_cat)
                     
                     fila_tabla = [
-                        f"MOV-{start_id + len(nuevas_filas):04d}",
                         fecha_str,
-                        "Banco Importado",
                         str(concepto_val) if pd.notnull(concepto_val) else "Sin concepto",
-                        tipo_val,
-                        cat_calc,
-                        subcat_calc,
-                        importe_float,
-                        "Pendiente",
-                        f"Importado de {uploaded_file.name}"
+                        str(cat_val),
+                        importe_float
                     ]
                     nuevas_filas.append(fila_tabla)
                 
                 if nuevas_filas:
                     response = requests.post(APPS_SCRIPT_URL, json={"rows": nuevas_filas})
                     if response.status_code == 200:
-                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados correctamente!")
+                        st.sidebar.success(f"¡{len(nuevas_filas)} movimientos guardados!")
                         st.cache_data.clear()
                         st.rerun()
                     else:
@@ -164,16 +137,11 @@ st.sidebar.markdown("---")
 # --- SIDEBAR: FILTROS ---
 st.sidebar.header("🔍 Filtros")
 
-bancos = ["Todos"] + sorted(list(df["Cuenta / Banco"].dropna().unique())) if not df.empty else ["Todos"]
-banco_sel = st.sidebar.selectbox("Cuenta / Banco", bancos)
-
 categorias = ["Todas"] + sorted(list(df["Categoría"].dropna().unique())) if not df.empty else ["Todas"]
 cat_sel = st.sidebar.selectbox("Categoría", categorias)
 
 df_filtered = df.copy()
 if not df_filtered.empty:
-    if banco_sel != "Todos":
-        df_filtered = df_filtered[df_filtered["Cuenta / Banco"] == banco_sel]
     if cat_sel != "Todas":
         df_filtered = df_filtered[df_filtered["Categoría"] == cat_sel]
 
@@ -211,6 +179,7 @@ with col_chart2:
     if not df_filtered.empty:
         df_trend = df_filtered.dropna(subset=["Fecha"]).sort_values("Fecha")
         if not df_trend.empty:
+            df_trend["Tipo"] = df_trend["Importe"].apply(lambda x: "Ingreso" if x >= 0 else "Gasto")
             fig_line = px.bar(
                 df_trend,
                 x="Fecha",
